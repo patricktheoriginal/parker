@@ -1,0 +1,24 @@
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Secrets / user config (contains API keys)
+config/api_keys.json
+
+# Runtime / generated
+memory/long_term.json
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
