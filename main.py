@@ -123,12 +123,13 @@ TOOL_DECLARATIONS = [
             "or topics — always prefer this over guessing. "
             "Modes: 'search' (default), 'news' (latest headlines on a topic), "
             "'research' (deep comprehensive answer), 'price' (product cost lookup), "
-            "'compare' (side-by-side comparison of items)."
+            "'compare' (side-by-side comparison of items). "
+            "For news, default to Vietnam news unless the user names another place."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "query":  {"type": "STRING", "description": "Search query or topic"},
+                "query":  {"type": "STRING", "description": "Search query or topic. For general news, leave broad — it defaults to Vietnam."},
                 "mode":   {"type": "STRING", "description": "search | news | research | price | compare"},
                 "items":  {"type": "ARRAY",  "items": {"type": "STRING"}, "description": "Items to compare (compare mode)"},
                 "aspect": {"type": "STRING", "description": "Comparison aspect: price | specs | reviews | features"},
@@ -150,13 +151,16 @@ TOOL_DECLARATIONS = [
     },
     {
         "name": "weather_report",
-        "description": "Gives the weather report to user",
+        "description": (
+            "Gives the weather report to the user. Focused on Vietnam and its "
+            "provinces/cities. If the user does not name a place, default to Vietnam."
+        ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "city": {"type": "STRING", "description": "City name"}
+                "city": {"type": "STRING", "description": "City or Vietnamese province name (e.g. Hanoi, Da Nang, Hue). Defaults to Vietnam if omitted."}
             },
-            "required": ["city"]
+            "required": []
         }
     },
     {
@@ -492,7 +496,7 @@ TOOL_DECLARATIONS = [
             },
             "instruction": {
                 "type": "STRING",
-                "description": "Free-form instruction if action doesn't cover it. E.g. 'translate this to Turkish', 'find all email addresses'"
+                "description": "Free-form instruction if action doesn't cover it. E.g. 'summarize this', 'find all email addresses'"
             },
             "format": {
                 "type": "STRING",
@@ -673,12 +677,13 @@ class ParkerLive:
         # Identity injection — overrides any hardcoded name in prompt.txt
         _addr = (f"ADDRESS: Always call the user '{_user_name}'."
                  if _user_name
-                 else "ADDRESS: When speaking Turkish → always say \"efendim\". "
-                      "When speaking English → say \"sir\". Never mix languages.")
+                 else "ADDRESS: Address the user as \"sir\".")
         identity_ctx = (
             f"[IDENTITY]\n"
             f"Your name is {self._asst_name}. "
             f"Always refer to yourself as {self._asst_name}.\n"
+            f"LANGUAGE: ALWAYS respond in English only, regardless of the language "
+            f"the user speaks. Never switch or mix languages.\n"
             f"{_addr}\n\n"
         )
 
@@ -782,7 +787,7 @@ class ParkerLive:
                     self._pending_vision = (img_b, mime_t, user_text, angle)
                     result = (
                         f"[VISION_ACTIVE] {_stall.capitalize()} captured. "
-                        f"Immediately say ONE short natural sentence in the user's own language, "
+                        f"Immediately say ONE short natural sentence in English, "
                         f"telling them you are looking at their {_stall} right now. "
                         f"Do NOT describe or guess content — the actual image arrives in the NEXT message."
                     )
@@ -1112,16 +1117,17 @@ class ParkerLive:
         name = _val("name")
         time_str = datetime.now().strftime("%H:%M")
 
-        # Start fetching news immediately — runs in parallel while phase 1 plays
+        # Start fetching news immediately — runs in parallel while phase 1 plays.
+        # Focus on Vietnam news, which is this assistant's core news topic.
         loop = asyncio.get_event_loop()
-        news_future = loop.run_in_executor(None, _fetch_news_sync, "top world news today")
+        news_future = loop.run_in_executor(None, _fetch_news_sync, "Vietnam news today")
 
         await asyncio.sleep(0.3)
         if not self.session:
             return
 
         # ── Phase 1: instant greeting ─────────────────────────────────────────
-        lang_clause = f" Respond in {lang}." if lang else ""
+        lang_clause = " Respond in English."
         name_clause = f" Address the user as {name}." if name else ""
 
         # Inject last session context if available — pop removes it so it's never repeated
@@ -1138,7 +1144,7 @@ class ParkerLive:
             )
 
         p1 = (
-            f"Greet the user warmly, mention it is {time_str}, and say you are fetching today's news now.{session_clause} "
+            f"Greet the user warmly, mention it is {time_str}, and say you are fetching today's Vietnam news now.{session_clause} "
             f"Keep it to 2 short sentences max. Do not call any tools.{lang_clause}{name_clause}"
         )
 
@@ -1155,7 +1161,7 @@ class ParkerLive:
         # ── Phase 2: fire as soon as Phase 1 audio is done ───────────────────
         async def _deliver_news():
             try:
-                lang_str = f" Respond in {lang}." if lang else ""
+                lang_str = " Respond in English."
 
                 # Wait for news fetch (already running) and Phase 1 turn-complete
                 # in parallel — whichever takes longer determines the wait time
@@ -1227,7 +1233,7 @@ class ParkerLive:
 
         convo = "\n".join(log[-40:])   # cap at last 40 turns to stay within token budget
         prompt = (
-            f"Summarize this conversation in 1-2 sentences in {lang}. "
+            f"Summarize this conversation in 1-2 sentences in English. "
             "Focus on what the user accomplished or discussed. "
             "Output ONLY the summary text, nothing else:\n\n" + convo
         )
@@ -1241,7 +1247,7 @@ class ParkerLive:
             )
             summary = (resp.text or "").strip()
             if summary:
-                save_session_summary(summary, lang)
+                save_session_summary(summary, "English")
         except Exception as e:
             print(f"[Memory] ⚠️ Session summary failed: {e}")
 
@@ -1287,7 +1293,7 @@ class ParkerLive:
                         for alert in alerts:
                             msg = (
                                 f"{alert}\n\n"
-                                f"Inform the user about this development naturally in {lang}. "
+                                f"Inform the user about this development naturally in English. "
                                 "One brief sentence only."
                             )
                             await self.session.send_client_content(

@@ -56,8 +56,11 @@ def _ddg_search(query: str, max_results: int = 6) -> list[dict]:
     return results
 
 
-def _ddg_news(query: str, max_results: int = 8) -> list[dict]:
-    """DDG news search — returns actual articles, not website homepages."""
+def _ddg_news(query: str, max_results: int = 8, region: str = "vn-vi") -> list[dict]:
+    """DDG news search — returns actual articles, not website homepages.
+
+    Defaults to the Vietnam region so Vietnamese coverage is prioritized.
+    """
     try:
         from ddgs import DDGS
     except ImportError:
@@ -66,7 +69,12 @@ def _ddg_news(query: str, max_results: int = 8) -> list[dict]:
     results = []
     try:
         with DDGS() as ddgs:
-            for r in ddgs.news(query, max_results=max_results):
+            # Some ddgs versions accept `region`; fall back gracefully if not.
+            try:
+                _iter = ddgs.news(query, region=region, max_results=max_results)
+            except TypeError:
+                _iter = ddgs.news(query, max_results=max_results)
+            for r in _iter:
                 results.append({
                     "title":   r.get("title",  ""),
                     "snippet": r.get("body",   ""),
@@ -169,8 +177,18 @@ def _news(query: str) -> str:
     """
     import threading
 
-    gemini_query = f"latest news today: {query}" if query else "top world news today"
-    ddg_query    = query if query else "world news today"
+    # Vietnam-focused: a bare news request defaults to Vietnam, and any query
+    # without an explicit country is nudged toward Vietnamese coverage.
+    _q = (query or "").strip()
+    if not _q:
+        gemini_query = "latest Vietnam news today"
+        ddg_query    = "Vietnam news today"
+    elif "vietnam" in _q.lower() or "viet nam" in _q.lower():
+        gemini_query = f"latest news today: {_q}"
+        ddg_query    = _q
+    else:
+        gemini_query = f"latest news today: {_q} (Vietnam)"
+        ddg_query    = f"{_q} Vietnam"
 
     result_box  = [None]   # first valid result lands here
     lock        = threading.Lock()

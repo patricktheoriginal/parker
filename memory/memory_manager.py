@@ -124,7 +124,9 @@ def format_memory_for_prompt(memory: dict | None) -> str:
     lines = []
 
     identity  = memory.get("identity", {})
-    id_fields = ["name", "age", "birthday", "city", "job", "language", "school", "nationality"]
+    # NOTE: "language" is intentionally excluded — Parker always responds in
+    # English, so a stale saved response-language must not leak into the prompt.
+    id_fields = ["name", "age", "birthday", "city", "job", "school", "nationality"]
     for field in id_fields:
         entry = identity.get(field)
         if entry:
@@ -132,7 +134,7 @@ def format_memory_for_prompt(memory: dict | None) -> str:
             if val:
                 lines.append(f"{field.title()}: {val}")
     for key, entry in identity.items():
-        if key in id_fields:
+        if key in id_fields or key == "language":
             continue
         val = entry.get("value") if isinstance(entry, dict) else entry
         if val:
