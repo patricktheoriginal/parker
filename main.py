@@ -37,7 +37,7 @@ from memory.memory_manager import (
 from actions.file_processor import file_processor
 from actions.flight_finder     import flight_finder
 from actions.open_app          import open_app
-from actions.weather_report    import weather_action
+from actions.weather_report    import weather_action, rain_forecast
 from actions.send_message      import send_message
 from actions.reminder          import reminder
 from actions.computer_settings import computer_settings
@@ -159,6 +159,23 @@ TOOL_DECLARATIONS = [
             "type": "OBJECT",
             "properties": {
                 "city": {"type": "STRING", "description": "City or Vietnamese province name (e.g. Hanoi, Da Nang, Hue). Defaults to Vietnam if omitted."}
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "rain_forecast",
+        "description": (
+            "Gives a rain forecast for Vietnam and its provinces/cities — chance of "
+            "rain and expected rainfall for the next few days. Use this whenever the "
+            "user asks about rain, whether it will rain, or the rain outlook. "
+            "If no place is named, default to Vietnam."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "city": {"type": "STRING", "description": "Vietnamese city or province (e.g. Hanoi, Da Nang, Hue). Defaults to Vietnam if omitted."},
+                "days": {"type": "INTEGER", "description": "How many days ahead (1-7, default 3)."}
             },
             "required": []
         }
@@ -740,6 +757,10 @@ class ParkerLive:
             elif name == "weather_report":
                 r = await loop.run_in_executor(None, lambda: weather_action(parameters=args, player=self.ui))
                 result = r or "Weather delivered."
+
+            elif name == "rain_forecast":
+                r = await loop.run_in_executor(None, lambda: rain_forecast(parameters=args, player=self.ui))
+                result = r or "Rain forecast delivered."
 
             elif name == "browser_control":
                 r = await loop.run_in_executor(None, lambda: browser_control(parameters=args, player=self.ui))

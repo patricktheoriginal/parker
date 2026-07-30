@@ -77,3 +77,128 @@ def _log(message: str, player=None) -> None:
             player.write_log(f"Parker: {message}")
         except Exception:
             pass
+
+
+# ── Rain forecast (Open-Meteo — free, no API key needed) ─────────────────────
+import json as _json
+import urllib.request as _urlreq
+import urllib.parse as _urlparse
+
+_GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
+_FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
+_VN_TZ = "Asia/Ho_Chi_Minh"
+
+
+def _http_json(url: str, timeout: int = 12) -> dict:
+    req = _urlreq.Request(url, headers={"User-Agent": "Parker/1.0"})
+    with _urlreq.urlopen(req, timeout=timeout) as resp:
+        return _json.load(resp)
+
+
+def _geocode_search(name: str, count: int = 5) -> list[dict]:
+    q = _urlparse.urlencode({"name": name, "count": count, "language": "en", "format": "json"})
+    try:
+        return _http_json(f"{_GEOCODE_URL}?{q}").get("results") or []
+    except Exception:
+        return []
+
+
+def _geocode_vn(place: str) -> tuple[float, float, str] | None:
+    """Resolve a place to (lat, lon, display_name), biased strongly to Vietnam.
+
+    Tries the name as-is and a spaced variant (e.g. 'Sapa' -> 'Sa Pa'), and
+    prefers any Vietnamese match before falling back to the top global hit.
+    """
+    variants = [place]
+    # Insert spaces between run-together syllables people often type (Sapa, Danang)
+    low = place.lower()
+    _spaced = {"sapa": "Sa Pa", "danang": "Da Nang", "haiphong": "Hai Phong",
+               "dalat": "Da Lat", "halong": "Ha Long", "hochiminh": "Ho Chi Minh"}
+    if low in _spaced:
+        variants.append(_spaced[low])
+
+    candidates: list[dict] = []
+    for name in variants:
+        candidates.extend(_geocode_search(name))
+        # Prefer a Vietnamese hit as soon as we find one
+        vn = next((c for c in candidates if c.get("country_code") == "VN"), None)
+        if vn:
+            r = vn
+            break
+    else:
+        if not candidates:
+            return None
+        # No VN match across variants — take the top global result
+        r = candidates[0]
+    name = r.get("name", place)
+    admin = r.get("admin1", "")
+    country = r.get("country", "")
+    label = ", ".join([p for p in (name, admin if admin and admin != name else "", country) if p])
+    return (r["latitude"], r["longitude"], label or name)
+
+
+def rain_forecast(parameters: dict, player=None, session_memory=None) -> str:
+    """Return a short English rain forecast for a Vietnamese city/province.
+
+    Uses Open-Meteo (no API key). Defaults to Vietnam when no place is given.
+    """
+    place = (parameters.get("city") or parameters.get("place") or "").strip()
+    days  = parameters.get("days", 3)
+    try:
+        days = max(1, min(7, int(days)))
+    except (TypeError, ValueError):
+        days = 3
+
+    if not place:
+        place = "Hanoi"  # a concrete VN point to anchor the national forecast
+        default_used = True
+    else:
+        default_used = False
+
+    geo = _geocode_vn(place)
+    if not geo:
+        msg = f"Sir, I couldn't locate '{place}' for a rain forecast."
+        _log(msg, player)
+        return msg
+    lat, lon, label = geo
+
+    params = _urlparse.urlencode({
+        "latitude": lat, "longitude": lon,
+        "daily": "precipitation_probability_max,precipitation_sum",
+        "forecast_days": days, "timezone": _VN_TZ,
+    })
+    try:
+        data = _http_json(f"{_FORECAST_URL}?{params}")
+        daily = data["daily"]
+        dates = daily["time"]
+        probs = daily["precipitation_probability_max"]
+        sums  = daily["precipitation_sum"]
+    except Exception as e:
+        msg = f"Sir, I couldn't fetch the rain forecast: {e}"
+        _log(msg, player)
+        return msg
+
+    where = "Vietnam" if default_used else label
+    parts = [f"Rain forecast for {where}:"]
+    for i in range(min(days, len(dates))):
+        prob = probs[i] if probs[i] is not None else 0
+        mm   = sums[i] if sums[i] is not None else 0
+        when = "Today" if i == 0 else ("Tomorrow" if i == 1 else dates[i])
+        if prob >= 70:
+            desc = "heavy rain likely"
+        elif prob >= 40:
+            desc = "rain possible"
+        elif prob >= 15:
+            desc = "slight chance of rain"
+        else:
+            desc = "mostly dry"
+        parts.append(f"{when}: {desc} — {prob}% chance, {mm:.1f} mm expected.")
+
+    msg = " ".join(parts)
+    _log(msg, player)
+    if session_memory:
+        try:
+            session_memory.set_last_search(query=f"rain forecast {where}", response=msg)
+        except Exception:
+            pass
+    return msg

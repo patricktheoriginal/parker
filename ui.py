@@ -60,27 +60,29 @@ _OS = platform.system()  # "Windows" | "Darwin" | "Linux"
 
 
 class C:
-    BG        = "#00060a"
-    PANEL     = "#010d14"
-    PANEL2    = "#010f18"
-    BORDER    = "#0d3347"
-    BORDER_B  = "#1a5c7a"
-    BORDER_A  = "#0f4060"
-    PRI       = "#00d4ff"
-    PRI_DIM   = "#007a99"
-    PRI_GHO   = "#001f2e"
-    ACC       = "#ff6b00"
-    ACC2      = "#ffcc00"
-    GREEN     = "#00ff88"
+    # ── Amber / Gold "Stark" theme ───────────────────────────────────────────
+    # Warm near-black base with a molten-gold primary (arc-reactor energy).
+    BG        = "#0a0600"
+    PANEL     = "#140d02"
+    PANEL2    = "#191002"
+    BORDER    = "#4a3410"
+    BORDER_B  = "#7a5a1a"
+    BORDER_A  = "#60420f"
+    PRI       = "#ffb300"   # molten gold — main accent
+    PRI_DIM   = "#996b00"
+    PRI_GHO   = "#2e1f00"
+    ACC       = "#ff6b00"   # status: deep orange
+    ACC2      = "#ffd54a"   # status: warm highlight
+    GREEN     = "#00ff88"   # status: OK / listening
     GREEN_D   = "#00aa55"
-    RED       = "#ff3355"
-    MUTED_C   = "#ff3366"
-    TEXT      = "#8ffcff"
-    TEXT_DIM  = "#3a8a9a"
-    TEXT_MED  = "#5ab8cc"
-    WHITE     = "#d8f8ff"
-    DARK      = "#000d14"
-    BAR_BG    = "#011520"
+    RED       = "#ff3355"   # status: error
+    MUTED_C   = "#ff3366"   # status: muted
+    TEXT      = "#ffe4a0"   # warm parchment text
+    TEXT_DIM  = "#8a6d3a"
+    TEXT_MED  = "#cca24a"
+    WHITE     = "#fff4d8"
+    DARK      = "#140b00"
+    BAR_BG    = "#1a1200"
 
 
 # Ana renge (accent) bağlı anahtarlar — durum renkleri (ACC, GREEN, RED…) sabit kalır
@@ -691,8 +693,8 @@ class LogWidget(QTextEdit):
                 background: {C.PANEL};
                 color: {C.TEXT};
                 border: 1px solid {C.BORDER};
-                border-radius: 4px;
-                padding: 6px;
+                border-radius: 8px;
+                padding: 8px;
                 selection-background-color: {C.PRI_GHO};
             }}
             QScrollBar:vertical {{
@@ -909,7 +911,7 @@ class _DropCanvas(QWidget):
         pad  = 6
         rect = QRectF(pad, pad, W - pad * 2, H - pad * 2)
 
-        bg_col = qcol("#001a24" if z._drag_over else ("#001218" if z._hovering else C.PANEL))
+        bg_col = qcol("#241802" if z._drag_over else ("#181002" if z._hovering else C.PANEL))
         p.setBrush(QBrush(bg_col)); p.setPen(Qt.PenStyle.NoPen)
         p.drawRoundedRect(rect, 6, 6)
 
@@ -940,7 +942,7 @@ class _DropCanvas(QWidget):
         p.drawText(QRectF(0, cy + 8, W, 16), Qt.AlignmentFlag.AlignCenter,
                    "Drop file here  or  Click to Browse")
         p.setFont(QFont("Courier New", 7))
-        p.setPen(QPen(qcol("#1a4a5a"), 1))
+        p.setPen(QPen(qcol("#5a4210"), 1))
         p.drawText(QRectF(0, cy + 24, W, 14), Qt.AlignmentFlag.AlignCenter,
                    "Images · Video · Audio · PDF · Docs · Code · Data")
 
@@ -981,7 +983,7 @@ class _DropCanvas(QWidget):
                    f"{ext_str}  ·  {size_str}")
 
         p.setFont(QFont("Courier New", 6))
-        p.setPen(QPen(qcol("#1e5c6a"), 1))
+        p.setPen(QPen(qcol("#6a4e12"), 1))
         par = str(path.parent)
         if len(par) > 42: par = "…" + par[-41:]
         p.drawText(QRectF(tx, H * 0.18 + 34, tw, 12),
@@ -1099,7 +1101,7 @@ class SetupOverlay(QWidget):
             return w
 
         layout.addWidget(_lbl("◈  INITIALISATION REQUIRED", 13, True))
-        layout.addWidget(_lbl("Configure J.A.R.V.I.S. before first boot.", 9, color=C.PRI_DIM))
+        layout.addWidget(_lbl("Configure Parker before first boot.", 9, color=C.PRI_DIM))
         layout.addSpacing(6)
 
         sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
@@ -1115,7 +1117,7 @@ class SetupOverlay(QWidget):
         self._key_input.setFixedHeight(32)
         self._key_input.setStyleSheet(f"""
             QLineEdit {{
-                background: #000d12; color: {C.TEXT};
+                background: #0f0a02; color: {C.TEXT};
                 border: 1px solid {C.BORDER}; border-radius: 3px; padding: 4px 8px;
             }}
             QLineEdit:focus {{ border: 1px solid {C.PRI}; }}
@@ -1165,7 +1167,7 @@ class SetupOverlay(QWidget):
 
     def _sel(self, key: str):
         self._sel_os = key
-        pal = {"windows":(C.PRI,"#001a22"),"mac":(C.ACC2,"#1a1400"),"linux":(C.GREEN,"#001a0d")}
+        pal = {"windows":(C.PRI,"#221802"),"mac":(C.ACC2,"#1a1400"),"linux":(C.GREEN,"#1f1602")}
         for k, btn in self._os_btns.items():
             if k == key:
                 fg, bg = pal[k]
@@ -1178,7 +1180,7 @@ class SetupOverlay(QWidget):
             else:
                 btn.setStyleSheet(f"""
                     QPushButton {{
-                        background: #000d12; color: {C.TEXT_DIM};
+                        background: #0f0a02; color: {C.TEXT_DIM};
                         border: 1px solid {C.BORDER}; border-radius: 3px;
                     }}
                     QPushButton:hover {{ color: {C.TEXT}; border: 1px solid {C.BORDER_B}; }}
@@ -1263,7 +1265,7 @@ class HueWheel(QWidget):
         ang = self._hue * 2 * math.pi
         hx  = center.x() + r * math.cos(ang)
         hy  = center.y() - r * math.sin(ang)
-        p.setPen(QPen(QColor("#00060a"), 2))
+        p.setPen(QPen(QColor("#0a0600"), 2))
         p.setBrush(QBrush(QColor("#ffffff")))
         p.drawEllipse(QPointF(hx, hy), 7.5, 7.5)
 
@@ -1314,7 +1316,7 @@ class CustomizeOverlay(QWidget):
             w.setStyleSheet(f"color: {color}; background: transparent;")
             return w
 
-        _fs = (f"QLineEdit {{ background: #000d12; color: {C.TEXT}; "
+        _fs = (f"QLineEdit {{ background: #0f0a02; color: {C.TEXT}; "
                f"border: 1px solid {C.BORDER}; border-radius: 3px; padding: 4px 8px; }}"
                f"QLineEdit:focus {{ border: 1px solid {C.PRI}; }}")
 
@@ -1374,7 +1376,7 @@ class CustomizeOverlay(QWidget):
         self._wheel.hue_committed.connect(self._on_wheel_commit)
 
         self._hex_input = QLineEdit(self._sel_color)
-        self._hex_input.setPlaceholderText("#00d4ff   (custom hex colour)")
+        self._hex_input.setPlaceholderText("#ffb300   (custom hex colour)")
         self._hex_input.setFont(QFont("Courier New", 10))
         self._hex_input.setFixedHeight(28)
         self._hex_input.setStyleSheet(_fs)
@@ -1733,7 +1735,7 @@ class RemoteKeyOverlay(QWidget):
         self._qr_label.setText("✓")
         self._qr_label.setFont(QFont("Courier New", 54, QFont.Weight.Bold))
         self._qr_label.setStyleSheet(
-            "color: #00ff88; background: #001a0d; border-radius: 10px;"
+            "color: #00ff88; background: #1f1602; border-radius: 10px;"
         )
         self._timer_lbl.setText("Phone connected — Parker ready")
         self._timer_lbl.setStyleSheet(f"color: {C.GREEN}; background: transparent;")
@@ -1796,7 +1798,7 @@ class MainWindow(QMainWindow):
         if _ui_color and _ui_color.lower() != DEFAULT_UI_COLOR:
             apply_ui_accent(_ui_color)
 
-        self.setWindowTitle(f"{_display} — MARK XLIX")
+        self.setWindowTitle(f"{_display} — MARK L")
         self.setMinimumSize(_MIN_W, _MIN_H)
         self.resize(_DEFAULT_W, _DEFAULT_H)
 
@@ -1837,7 +1839,7 @@ class MainWindow(QMainWindow):
 
         # Live camera container — replaces HUD when camera stream is active
         _cam_cont = QWidget()
-        _cam_cont.setStyleSheet("background: #000308;")
+        _cam_cont.setStyleSheet("background: #080500;")
         _cam_v = QVBoxLayout(_cam_cont)
         _cam_v.setContentsMargins(0, 0, 0, 0)
         _cam_v.setSpacing(0)
@@ -2473,7 +2475,7 @@ class MainWindow(QMainWindow):
             l.setStyleSheet(f"color: {color}; background: transparent;")
             return l
 
-        lay.addWidget(_badge("MARK XLIX", C.PRI_DIM))
+        lay.addWidget(_badge("MARK L", C.PRI_DIM))
         lay.addSpacing(8)
         self._drawer_btn = QPushButton("⚙")
         self._drawer_btn.setFixedSize(26, 26)
@@ -2500,7 +2502,7 @@ class MainWindow(QMainWindow):
         self._title_lbl.setFont(QFont("Courier New", 17, QFont.Weight.Bold))
         self._title_lbl.setStyleSheet(f"color: {C.PRI}; background: transparent;")
         mid.addWidget(self._title_lbl)
-        _sub_text = ("Proactive Assistant · Responsive Kernel · Enhanced Reasoning"
+        _sub_text = ("Vietnam Weather · Rain · News — English Voice Assistant"
                      if _disp == "PARKER"
                      else "Personal AI Assistant")
         self._sub_lbl = QLabel(_sub_text)
@@ -2673,7 +2675,7 @@ class MainWindow(QMainWindow):
         """Floating overlay panel shown when the ⚙ header button is toggled."""
         _BTN_STYLE_PRI = f"""
             QPushButton {{
-                background: #00091a; color: {C.PRI};
+                background: #1a1002; color: {C.PRI};
                 border: 1px solid {C.PRI_DIM}; border-radius: 3px;
                 text-align: left; padding: 0 8px;
             }}
@@ -2783,7 +2785,7 @@ class MainWindow(QMainWindow):
         self._input.setFixedHeight(30)
         self._input.setStyleSheet(f"""
             QLineEdit {{
-                background: #000d14; color: {C.WHITE};
+                background: #100b02; color: {C.WHITE};
                 border: 1px solid {C.BORDER}; border-radius: 3px; padding: 3px 7px;
             }}
             QLineEdit:focus {{ border: 1px solid {C.PRI}; }}
@@ -3065,10 +3067,10 @@ class MainWindow(QMainWindow):
             self._autostart_btn.setText("◉  AUTO-START: ON")
             self._autostart_btn.setStyleSheet(f"""
                 QPushButton {{
-                    background: #001a08; color: {C.GREEN};
+                    background: #1a1200; color: {C.GREEN};
                     border: 1px solid {C.GREEN_D}; border-radius: 3px;
                 }}
-                QPushButton:hover {{ background: #002010; }}
+                QPushButton:hover {{ background: #201400; }}
             """)
         else:
             self._autostart_btn.setText("◉  AUTO-START: OFF")
@@ -3093,11 +3095,11 @@ class MainWindow(QMainWindow):
             self._brief_btn.setText("☀  MORNING BRIEF: ON")
             self._brief_btn.setStyleSheet(f"""
                 QPushButton {{
-                    background: #001a08; color: {C.GREEN};
+                    background: #1a1200; color: {C.GREEN};
                     border: 1px solid {C.GREEN_D}; border-radius: 3px;
                     text-align: left; padding: 0 8px;
                 }}
-                QPushButton:hover {{ background: #002010; }}
+                QPushButton:hover {{ background: #201400; }}
             """)
         else:
             self._brief_btn.setText("☀  MORNING BRIEF: OFF")
@@ -3145,10 +3147,10 @@ class MainWindow(QMainWindow):
         """Update all name/theme-dependent UI elements and persist to config."""
         self._assistant_name = name.strip() or "Parker"
         display = self._assistant_name.upper()
-        self.setWindowTitle(f"{display} — MARK XLIX")
+        self.setWindowTitle(f"{display} — MARK L")
         self._title_lbl.setText(display)
         if display == "PARKER":
-            self._sub_lbl.setText("Proactive Assistant · Responsive Kernel · Enhanced Reasoning")
+            self._sub_lbl.setText("Vietnam Weather · Rain · News — English Voice Assistant")
         else:
             self._sub_lbl.setText("Personal AI Assistant")
         self._log._ai_name_lc = self._assistant_name.lower()
@@ -3232,10 +3234,10 @@ class MainWindow(QMainWindow):
             self._mute_btn.setText("🎙  MICROPHONE ACTIVE")
             self._mute_btn.setStyleSheet(f"""
                 QPushButton {{
-                    background: #00140a; color: {C.GREEN};
+                    background: #141000; color: {C.GREEN};
                     border: 1px solid {C.GREEN}; border-radius: 3px;
                 }}
-                QPushButton:hover {{ background: #001f10; }}
+                QPushButton:hover {{ background: #1f1600; }}
             """)
 
     def _send(self):
