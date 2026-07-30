@@ -21,12 +21,44 @@ from datetime import datetime, timedelta
 from urllib.parse import quote_plus, urlencode
 from urllib.request import Request, urlopen
 
-# Reuse the Vietnam geocoding logic already used by the weather module so
-# provinces like "Sapa" resolve correctly to Vietnam.
-from actions.weather_report import _geocode_vn, _http_json, _VN_TZ
+# Reuse the province-level geocoder from the weather module as a fallback.
+from actions.weather_report import _geocode_vn as _geocode_province, _http_json, _VN_TZ
 
 _OSRM_URL = "https://router.project-osrm.org/route/v1/driving"
 _FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
+_NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
+# Nominatim's usage policy requires an identifying User-Agent.
+_UA = "Parker-Assistant/1.0 (Vietnam route planner)"
+
+
+def _geocode_place(place: str) -> tuple[float, float, str] | None:
+    """Resolve any Vietnam place — including landmarks, airports, markets,
+    districts, and Vietnamese-with-diacritics names — to (lat, lon, label).
+
+    Uses Nominatim (OpenStreetMap), which knows points of interest, and falls
+    back to the province-level geocoder if Nominatim finds nothing.
+    """
+    if not place or not place.strip():
+        return None
+    q = urlencode({
+        "q": place.strip(), "format": "json", "limit": 1,
+        "countrycodes": "vn", "accept-language": "en", "addressdetails": 0,
+    })
+    try:
+        req = Request(f"{_NOMINATIM_URL}?{q}", headers={"User-Agent": _UA})
+        with urlopen(req, timeout=12) as resp:
+            data = json.load(resp)
+        if data:
+            top = data[0]
+            name = top.get("display_name", place)
+            # Keep the label short and clean: first 2-3 non-empty comma parts
+            parts = [p.strip() for p in name.split(",") if p.strip()]
+            short = ", ".join(parts[:3])
+            return (float(top["lat"]), float(top["lon"]), short or place)
+    except Exception:
+        pass
+    # Fallback: province/city geocoder (Open-Meteo)
+    return _geocode_province(place)
 
 
 def _fmt_duration(seconds: float) -> str:
@@ -119,8 +151,10 @@ def route_directions(parameters: dict, player=None, session_memory=None) -> str:
         # No origin given — default to Hanoi so we can still plan a route.
         origin = "Hanoi"
 
-    o = _geocode_vn(origin)
-    d = _geocode_vn(dest)
+    o = _geocode_place(origin)
+    import time as _t
+    _t.sleep(1.1)   # Nominatim usage policy: ~1 request/second
+    d = _geocode_place(dest)
     if not o:
         msg = f"Sir, I couldn't locate the origin '{origin}'."
         _log(msg, player)
@@ -155,10 +189,12 @@ def route_directions(parameters: dict, player=None, session_memory=None) -> str:
     for lon, lat in _sample_points(coords, n=3):
         along.append(_weather_summary(lat, lon))
 
-    # Open Google Maps driving directions (user can tilt into 3D inside Maps)
+    # Open Google Maps driving directions (user can tilt into 3D inside Maps).
+    # Use exact coordinates so Maps doesn't re-resolve an ambiguous name, but
+    # keep the readable place name as a label via the *_place hints.
     gmaps = ("https://www.google.com/maps/dir/?api=1"
-             f"&origin={quote_plus(o_label)}"
-             f"&destination={quote_plus(d_label)}"
+             f"&origin={o_lat},{o_lon}"
+             f"&destination={d_lat},{d_lon}"
              "&travelmode=driving")
     opened = False
     try:
