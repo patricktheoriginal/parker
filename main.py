@@ -38,6 +38,7 @@ from actions.file_processor import file_processor
 from actions.flight_finder     import flight_finder
 from actions.open_app          import open_app
 from actions.weather_report    import weather_action, rain_forecast
+from actions.maps_route         import route_directions
 from actions.send_message      import send_message
 from actions.reminder          import reminder
 from actions.computer_settings import computer_settings
@@ -178,6 +179,26 @@ TOOL_DECLARATIONS = [
                 "days": {"type": "INTEGER", "description": "How many days ahead (1-7, default 3)."}
             },
             "required": []
+        }
+    },
+    {
+        "name": "route_directions",
+        "description": (
+            "Plans the fastest driving route between two places in Vietnam and "
+            "opens it on Google Maps. Returns the distance, driving time, a concrete "
+            "depart/arrive time, and the weather along the route. Use this whenever "
+            "the user asks how to get somewhere, the route/directions to a place, "
+            "how far or how long a drive is, or the best time to leave. "
+            "If the user does not give a starting point, leave 'origin' empty."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "destination": {"type": "STRING", "description": "Destination place in Vietnam (city, province, or landmark)."},
+                "origin":      {"type": "STRING", "description": "Starting place in Vietnam. Leave empty if the user did not specify one."},
+                "depart_time": {"type": "STRING", "description": "Desired departure time, e.g. '7am', '15:30', or 'now'. Default is now."}
+            },
+            "required": ["destination"]
         }
     },
     {
@@ -761,6 +782,10 @@ class ParkerLive:
             elif name == "rain_forecast":
                 r = await loop.run_in_executor(None, lambda: rain_forecast(parameters=args, player=self.ui))
                 result = r or "Rain forecast delivered."
+
+            elif name == "route_directions":
+                r = await loop.run_in_executor(None, lambda: route_directions(parameters=args, player=self.ui))
+                result = r or "Route delivered."
 
             elif name == "browser_control":
                 r = await loop.run_in_executor(None, lambda: browser_control(parameters=args, player=self.ui))
