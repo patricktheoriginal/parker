@@ -261,7 +261,134 @@ def focus_search():
     if _OS == "Darwin": pyautogui.hotkey("command", "l")
     else:               pyautogui.hotkey("ctrl", "l")
 
-def pause_video():      pyautogui.press("space")
+# ── Media playback control ───────────────────────────────────────────────────
+# The old behaviour pressed Space, which only works when the media window is
+# focused — so pause/stop looked successful but did nothing when music played
+# in the background (Spotify/Music) or another window was active. These use the
+# OS-level media transport instead, which reaches the active player regardless
+# of focus.
+
+def _osascript(script: str) -> bool:
+    try:
+        r = subprocess.run(["osascript", "-e", script],
+                           capture_output=True, text=True, timeout=5)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def _mac_media(command: str) -> bool:
+    """command: 'playpause' | 'play' | 'pause' | 'stop' | 'next' | 'previous'.
+
+    Targets whichever of Spotify / Music is actually running, so it works even
+    when the app is in the background. Falls back to the media key otherwise.
+    """
+    # AppleScript verbs per app
+    verb = {
+        "playpause": "playpause",
+        "play":      "play",
+        "pause":     "pause",
+        "stop":      "pause",          # Spotify/Music have no 'stop'; pause is the closest
+        "next":      "next track",
+        "previous":  "previous track",
+    }.get(command, "playpause")
+
+    # Pick the most relevant player: for pause/stop prefer the one that is
+    # actually playing; for play prefer one that is paused; otherwise any running.
+    def _state(app: str) -> str:
+        try:
+            r = subprocess.run(
+                ["osascript", "-e",
+                 f'tell application "{app}" to if it is running then return player state as text'],
+                capture_output=True, text=True, timeout=4)
+            return (r.stdout or "").strip().lower()
+        except Exception:
+            return ""
+
+    states = {app: _state(app) for app in ("Spotify", "Music")}
+    running = [a for a, s in states.items() if s]  # non-empty state = running
+
+    if command in ("pause", "stop"):
+        ordered = [a for a in running if states[a] == "playing"] + \
+                  [a for a in running if states[a] != "playing"]
+    elif command == "play":
+        ordered = [a for a in running if states[a] in ("paused", "stopped")] + \
+                  [a for a in running if states[a] not in ("paused", "stopped")]
+    else:
+        ordered = running
+
+    for app in ordered:
+        script = (
+            f'tell application "{app}"\n'
+            f'  if it is running then\n'
+            f'    {verb}\n'
+            f'    return "done"\n'
+            f'  end if\n'
+            f'end tell\n'
+            f'return "skip"'
+        )
+        try:
+            r = subprocess.run(["osascript", "-e", script],
+                               capture_output=True, text=True, timeout=5)
+            if r.returncode == 0 and "done" in (r.stdout or ""):
+                return True
+        except Exception:
+            pass
+
+    # Nothing controllable was running — send the system media key as a fallback.
+    # key code 16 = F8/play-pause on Mac media keys.
+    keymap = {"playpause": 16, "play": 16, "pause": 16, "stop": 16,
+              "next": 17, "previous": 18}
+    kc = keymap.get(command, 16)
+    return _osascript(f'tell application "System Events" to key code {kc}')
+
+
+def _media_control(command: str) -> bool:
+    """Cross-platform media transport: playpause|play|pause|stop|next|previous.
+
+    Returns True if a control action was dispatched.
+    """
+    if _OS == "Darwin":
+        return _mac_media(command)
+
+    if _OS == "Linux":
+        # playerctl speaks MPRIS to whatever player is active
+        verb = {"playpause": "play-pause", "play": "play", "pause": "pause",
+                "stop": "stop", "next": "next", "previous": "previous"}.get(command, "play-pause")
+        try:
+            if subprocess.run(["which", "playerctl"], capture_output=True).returncode == 0:
+                subprocess.run(["playerctl", verb], capture_output=True, timeout=5)
+                return True
+        except Exception:
+            pass
+        # Fall through to key press if playerctl is missing
+
+    # Windows (and Linux fallback): system media keys reach the active player
+    keyname = {"playpause": "playpause", "play": "playpause", "pause": "playpause",
+               "stop": "stop", "next": "nexttrack", "previous": "prevtrack"}.get(command, "playpause")
+    if _PYAUTOGUI:
+        try:
+            pyautogui.press(keyname)
+            return True
+        except Exception:
+            # Some keys aren't in pyautogui's map on all platforms — degrade to space
+            pyautogui.press("space")
+            return True
+    return False
+
+
+def play_music():   _media_control("play")
+def pause_music():  _media_control("pause")
+def stop_music():   _media_control("stop")
+def next_track():   _media_control("next")
+def prev_track():   _media_control("previous")
+def media_playpause(): _media_control("playpause")
+
+
+def pause_video():
+    """Legacy 'pause/play the focused video' — now routes through media
+    transport first, then falls back to Space for focused web players."""
+    _media_control("playpause")
 
 def refresh_page():
     if _OS == "Darwin": pyautogui.hotkey("command", "r")
@@ -531,7 +658,21 @@ ACTION_MAP: dict[str, callable] = {
     "sleep_display":       sleep_display,
     "screen_off":          sleep_display,
     "pause_video":         pause_video,
-    "play_pause":          pause_video,
+    "play_pause":          media_playpause,
+    "play_music":          play_music,
+    "resume_music":        play_music,
+    "play":                play_music,
+    "resume":              play_music,
+    "pause_music":         pause_music,
+    "pause":               pause_music,
+    "stop_music":          stop_music,
+    "stop":                stop_music,
+    "next_track":          next_track,
+    "next_song":           next_track,
+    "skip":                next_track,
+    "prev_track":          prev_track,
+    "previous_track":      prev_track,
+    "previous_song":       prev_track,
     "close_app":           close_app,
     "close_window":        close_window,
     "full_screen":         full_screen,
@@ -609,6 +750,7 @@ Rules:
 - For type_text: value is the exact text to type.
 - For press_key: value is the key name (e.g. "f5", "tab", "enter").
 - For reload_n: value is an integer (number of times to reload).
+- Music/media: "play"/"resume"/"continue music" -> play_music; "pause"/"pause music" -> pause_music; "stop"/"stop music"/"turn off music" -> stop_music; "next"/"skip"/"next song" -> next_track; "previous"/"back" -> prev_track.
 - If no clear match, pick the closest action.
 - Return ONLY the JSON, no explanation, no markdown."""
 
@@ -693,6 +835,25 @@ def computer_settings(
     if action == "scroll_down":
         scroll_down(int(value or 500))
         return "Scrolled down."
+
+    # Media transport — report the real outcome, and confirm state on macOS.
+    _MEDIA_CMD = {
+        "play_music": "play", "resume_music": "play", "play": "play", "resume": "play",
+        "pause_music": "pause", "pause": "pause",
+        "stop_music": "stop", "stop": "stop",
+        "next_track": "next", "next_song": "next", "skip": "next",
+        "prev_track": "previous", "previous_track": "previous", "previous_song": "previous",
+        "play_pause": "playpause",
+    }
+    if action in _MEDIA_CMD:
+        cmd = _MEDIA_CMD[action]
+        ok = _media_control(cmd)
+        msg = {"play": "Playing music.", "pause": "Paused music.", "stop": "Stopped music.",
+               "next": "Skipped to the next track.", "previous": "Went to the previous track.",
+               "playpause": "Toggled playback."}.get(cmd, "Done.")
+        if not ok:
+            return "No active media player found to control."
+        return msg
 
     func = ACTION_MAP.get(action)
     if not func:
