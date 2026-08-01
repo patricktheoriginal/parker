@@ -105,28 +105,77 @@ def remote_find(parameters: dict, player=None, session_memory=None) -> str:
     return "\n".join(lines)
 
 
+def _log(player, msg: str):
+    if player:
+        try:
+            player.write_log(msg)
+        except Exception:
+            pass
+
+
 def remote_get(parameters: dict, player=None, session_memory=None) -> str:
+    from urllib.parse import quote
     url, token = _cfg()
     if not url or not token:
         return _not_configured()
     path = (parameters or {}).get("path", "").strip()
     if not path:
         return "Sir, which file or folder should I fetch? (use 'find' first if unsure)."
-    # Larger timeout — folders/archives/images can be big.
-    d = _rpc("get", {"path": path}, timeout=180)
-    if d.get("error"):
-        return f"Sir, I couldn't fetch that: {d['error']}"
+
+    _log(player, f"SYS: Fetching '{path}' from the Mac…")
+    dl_url = f"{url}/download?path={quote(path)}"
+    req = Request(dl_url, method="GET", headers={
+        "Authorization": f"Bearer {token}",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Parker/1.0"})
+
     try:
-        dest_dir = Path.home() / "Downloads" / "ParkerRemote"
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        dest = dest_dir / d["name"]
-        dest.write_bytes(base64.b64decode(d["b64"]))
+        resp = urlopen(req, timeout=300)
     except Exception as e:
-        return f"Sir, I fetched it but couldn't save it: {e}"
-    what = "folder (zipped)" if d.get("kind") == "folder-zip" else "file"
-    size_mb = d["size"] / (1024 * 1024)
-    size_str = f"{size_mb:.1f} MB" if size_mb >= 1 else f"{d['size']:,} bytes"
-    return (f"Got the {what} '{d['name']}' ({size_str}) from the remote machine. "
+        return f"Sir, I couldn't fetch that: {e}"
+
+    # Error responses come back as JSON on 4xx.
+    ctype = resp.headers.get("Content-Type", "")
+    if "application/json" in ctype:
+        try:
+            err = json.loads(resp.read().decode("utf-8", "ignore"))
+            return f"Sir, I couldn't fetch that: {err.get('error', 'unknown error')}"
+        except Exception:
+            return "Sir, I couldn't fetch that."
+
+    name = resp.headers.get("X-Filename", "download.bin")
+    kind = resp.headers.get("X-Kind", "file")
+    total = int(resp.headers.get("Content-Length", 0) or 0)
+
+    dest_dir = Path.home() / "Downloads" / "ParkerRemote"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / name
+
+    got = 0
+    last_pct = -10
+    try:
+        with open(dest, "wb") as f:
+            while True:
+                chunk = resp.read(256 * 1024)
+                if not chunk:
+                    break
+                f.write(chunk)
+                got += len(chunk)
+                if total:
+                    pct = int(got * 100 / total)
+                    # Log every ~10% so the log isn't spammed.
+                    if pct >= last_pct + 10 or pct == 100:
+                        last_pct = pct
+                        mb = got / (1024 * 1024)
+                        _log(player, f"SYS: Downloading '{name}' — {pct}% "
+                                     f"({mb:.1f} MB)")
+    except Exception as e:
+        return f"Sir, the download failed partway: {e}"
+
+    what = "folder (zipped)" if kind == "folder-zip" else "file"
+    size_mb = got / (1024 * 1024)
+    size_str = f"{size_mb:.1f} MB" if size_mb >= 1 else f"{got:,} bytes"
+    _log(player, f"SYS: Saved '{name}' → {dest}")
+    return (f"Got the {what} '{name}' ({size_str}) from the remote machine. "
             f"Saved to {dest}.")
 
 

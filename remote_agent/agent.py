@@ -151,14 +151,13 @@ def _search(root: str, query: str) -> dict:
 _MAX_TRANSFER = 500 * 1024 * 1024   # 500 MB cap for a single fetch
 
 
-def _get_file(path: str) -> dict:
-    """Fetch ANY file (image, zip/rar, pdf, docx, xlsx, …) as raw bytes, or a
-    whole FOLDER zipped on the fly. Returns base64 of the bytes."""
+def _produce_bytes(path: str):
+    """Return (name, kind, raw_bytes) for a file or a zipped folder, or
+    (None, error_str, None) on failure."""
     p = _resolve_path(path)
     if not _within_roots(p):
-        return {"error": "not allowed"}
+        return None, "not allowed", None
 
-    # Folder → zip it in memory and return the zip.
     if p.is_dir():
         import io
         import zipfile
@@ -171,22 +170,26 @@ def _get_file(path: str) -> dict:
                 try:
                     total += f.stat().st_size
                     if total > _MAX_TRANSFER:
-                        return {"error": f"folder too large (> {_MAX_TRANSFER // (1024*1024)} MB)"}
+                        return None, f"folder too large (> {_MAX_TRANSFER // (1024*1024)} MB)", None
                     zf.write(f, f.relative_to(p.parent))
                 except Exception:
                     continue
-        raw = buf.getvalue()
-        return {"name": p.name + ".zip", "size": len(raw), "kind": "folder-zip",
-                "b64": base64.b64encode(raw).decode()}
+        return p.name + ".zip", "folder-zip", buf.getvalue()
 
     if not p.is_file():
-        return {"error": "not allowed or not a file"}
+        return None, "not allowed or not a file", None
     if p.stat().st_size > _MAX_TRANSFER:
-        return {"error": f"file too large (> {_MAX_TRANSFER // (1024*1024)} MB)"}
-    # Works for any file type — images, archives, documents — it's raw bytes.
-    data = base64.b64encode(p.read_bytes()).decode()
-    return {"name": p.name, "size": p.stat().st_size, "kind": "file",
-            "b64": data}
+        return None, f"file too large (> {_MAX_TRANSFER // (1024*1024)} MB)", None
+    return p.name, "file", p.read_bytes()
+
+
+def _get_file(path: str) -> dict:
+    """Fetch ANY file or a zipped FOLDER as base64 (single-shot, no progress)."""
+    name, kind, raw = _produce_bytes(path)
+    if raw is None:
+        return {"error": kind}
+    return {"name": name, "size": len(raw), "kind": kind,
+            "b64": base64.b64encode(raw).decode()}
 
 
 def _system_status() -> dict:
@@ -222,6 +225,34 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def do_GET(self):
+        # Raw download endpoint: /download?path=... → raw bytes with
+        # Content-Length so the client can show real progress.
+        from urllib.parse import urlparse, parse_qs, unquote
+        parsed = urlparse(self.path)
+        if parsed.path != "/download":
+            return self._send({"error": "not found"}, 404)
+        if not _check_auth(self.headers):
+            return self._send({"error": "unauthorized"}, 401)
+        path = unquote((parse_qs(parsed.query).get("path", [""])[0]))
+        name, kind, raw = _produce_bytes(path)
+        if raw is None:
+            return self._send({"error": kind}, 400)
+        self.send_response(200)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("X-Filename", name)
+        self.send_header("X-Kind", kind)
+        self.end_headers()
+        # Write in chunks so a big transfer streams out.
+        view = memoryview(raw)
+        chunk = 256 * 1024
+        for i in range(0, len(raw), chunk):
+            try:
+                self.wfile.write(view[i:i + chunk])
+            except Exception:
+                break
 
     def do_POST(self):
         if self.path != "/rpc":
