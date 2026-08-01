@@ -38,7 +38,7 @@ from actions.file_processor import file_processor
 from actions.flight_finder     import flight_finder
 from actions.open_app          import open_app
 from actions.weather_report    import weather_action, rain_forecast, where_am_i, set_my_location
-from actions.maps_route         import route_directions, different_route
+from actions.maps_route         import route_directions, different_route, analyze_route
 from actions.send_message      import send_message
 from actions.make_call         import make_call
 from actions.reminder          import reminder
@@ -253,6 +253,24 @@ TOOL_DECLARATIONS = [
             "or 'is there a faster/shorter way'."
         ),
         "parameters": {"type": "OBJECT", "properties": {}},
+    },
+    {
+        "name": "analyze_route",
+        "description": (
+            "Gives an in-depth analysis of the current route: the road-type "
+            "breakdown (expressway/cao tốc, national highway/quốc lộ, city roads), "
+            "when it's congested (Vietnam rush hours), the estimated time now, and "
+            "the worst-case time in heavy traffic. Use when the user asks about "
+            "traffic, when it's jammed, whether the route is highway or expressway, "
+            "or the longest/worst-case travel time. Requires a route to be planned first."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "depart_time": {"type": "STRING", "description": "Optional time to analyze for, e.g. '8am', '18:00'. Defaults to now."}
+            },
+            "required": []
+        },
     },
     {
         "name": "send_message",
@@ -944,6 +962,10 @@ class ParkerLive:
             elif name == "different_route":
                 r = await loop.run_in_executor(None, lambda: different_route(parameters=args, player=self.ui))
                 result = r or "Alternative route shown."
+
+            elif name == "analyze_route":
+                r = await loop.run_in_executor(None, lambda: analyze_route(parameters=args, player=self.ui))
+                result = r or "Route analyzed."
 
             elif name == "browser_control":
                 r = await loop.run_in_executor(None, lambda: browser_control(parameters=args, player=self.ui))

@@ -297,6 +297,23 @@ def different_route(parameters: dict = None, player=None, session_memory=None) -
             + describe(last["routes"], idx))
 
 
+def analyze_route(parameters: dict = None, player=None, session_memory=None) -> str:
+    """In-depth analysis of the current route: road types (expressway/highway/
+    city), plus an estimated rush-hour/traffic impact and worst-case time."""
+    from actions.route_engine import analyze_route_deep, get_last
+    if not get_last()["routes"]:
+        return "Sir, ask me for a route first, then I can analyze it in depth."
+    params = parameters or {}
+    depart_hour = None
+    when = (params.get("depart_time") or params.get("time") or "").strip()
+    if when:
+        dt = _parse_depart_time(when)
+        depart_hour = dt.hour + dt.minute / 60
+    msg = analyze_route_deep(depart_hour=depart_hour)
+    _log(msg, player)
+    return msg
+
+
 def route_directions(parameters: dict, player=None, session_memory=None) -> str:
     """Plan a Vietnam driving route: compute alternative routes with analysis,
     show a 3D map, and give timing + along-route weather."""

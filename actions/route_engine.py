@@ -48,6 +48,19 @@ def _fmt_dur(seconds: float) -> str:
     return (f"{h} h {m} min" if h else f"{m} min")
 
 
+def _classify_road(name: str, ref: str) -> str:
+    """Classify a road segment as 'expressway' | 'highway' | 'urban'."""
+    n = (name or "").lower()
+    r = (ref or "").upper()
+    if "cao tốc" in n or r.startswith("CT"):
+        return "expressway"          # đường cao tốc
+    if "quốc lộ" in n or r.startswith("QL"):
+        return "highway"             # quốc lộ
+    if "tỉnh lộ" in n or r.startswith("DT") or r.startswith("ĐT"):
+        return "provincial"          # tỉnh lộ
+    return "urban"                   # đường nội đô / khác
+
+
 def _osrm_routes(o, d) -> list:
     url = (f"{_OSRM_URL}/{o[1]},{o[0]};{d[1]},{d[0]}"
            "?alternatives=3&overview=full&geometries=geojson&steps=true")
@@ -56,7 +69,17 @@ def _osrm_routes(o, d) -> list:
         routes = []
         for r in data.get("routes", []):
             pts = [[lat, lon] for lon, lat in r["geometry"]["coordinates"]]
-            turns = sum(len(leg.get("steps", [])) for leg in r.get("legs", []))
+            steps = [s for leg in r.get("legs", []) for s in leg.get("steps", [])]
+            turns = len(steps)
+            # Distance per road class (meters), from the step maneuvers.
+            by_class: dict = {}
+            names: list = []
+            for s in steps:
+                cls = _classify_road(s.get("name", ""), s.get("ref", ""))
+                by_class[cls] = by_class.get(cls, 0.0) + float(s.get("distance", 0))
+                nm = s.get("name") or ""
+                if nm and nm not in names:
+                    names.append(nm)
             routes.append({
                 "distance_m": r["distance"],
                 "duration_s": r["duration"],
@@ -64,6 +87,8 @@ def _osrm_routes(o, d) -> list:
                 "turns": turns or None,
                 "summary": "",
                 "points": pts,
+                "by_class": by_class,        # meters per road type
+                "road_names": names,         # ordered unique road names
             })
         return routes
     except Exception as e:
@@ -164,3 +189,98 @@ def describe(routes: list, selected: int = 0) -> str:
         lines.append(f"{mark}Route {i+1}{name}: {r['dist_km']:.0f} km, "
                      f"{r['eta_text']} — {r['analysis']}.")
     return "\n".join(lines)
+
+
+# ── Deep analysis: road types (real) + traffic estimate (Vietnam rush hours) ──
+
+# Vietnam rush hours and how much they slow the URBAN portion of a trip.
+# These are estimates (no live-traffic feed), tuned to typical VN city traffic.
+_RUSH_WINDOWS = [
+    ((7, 0), (9, 0),  "morning rush (7–9 AM)"),
+    ((11, 0), (13, 0), "midday (11 AM–1 PM)"),
+    ((16, 30), (19, 30), "evening rush (4:30–7:30 PM)"),
+]
+
+
+def _rush_factor(hour: float) -> tuple[float, str]:
+    """Return (extra-delay multiplier for urban roads, label) at a given hour."""
+    for (h1, m1), (h2, m2), label in _RUSH_WINDOWS:
+        start, end = h1 + m1 / 60, h2 + m2 / 60
+        if start <= hour < end:
+            # Morning/evening rush are worst; midday milder.
+            factor = 0.35 if "rush" in label else 0.15
+            return factor, label
+    if 22 <= hour or hour < 5:
+        return -0.10, "late night (light traffic)"
+    return 0.0, "off-peak"
+
+
+def analyze_route_deep(depart_hour: float | None = None,
+                       selected: int | None = None) -> str:
+    """In-depth analysis of the selected route: real road-type breakdown from
+    OSRM, plus an ESTIMATED traffic/rush-hour impact for Vietnam.
+
+    depart_hour: 0–23.99; defaults to now.
+    """
+    routes = _LAST["routes"]
+    if not routes:
+        return "Ask me for a route first, then I can analyze it."
+    idx = _LAST["selected"] if selected is None else selected
+    r = routes[idx]
+
+    total = r["distance_m"] or 1.0
+    bc = r.get("by_class", {})
+    exp = bc.get("expressway", 0)
+    hwy = bc.get("highway", 0)
+    prov = bc.get("provincial", 0)
+    urban = bc.get("urban", 0) + (total - (exp + hwy + prov + bc.get("urban", 0)))
+    urban = max(urban, 0)
+
+    def pct(x):
+        return round(100 * x / total)
+
+    # Road-type sentence (real OSRM data)
+    parts_types = []
+    if exp:  parts_types.append(f"{pct(exp)}% expressway (cao tốc)")
+    if hwy:  parts_types.append(f"{pct(hwy)}% national highway (quốc lộ)")
+    if prov: parts_types.append(f"{pct(prov)}% provincial road")
+    if urban: parts_types.append(f"{pct(urban)}% city/other roads")
+    road_line = "Road types: " + ", ".join(parts_types) + "." if parts_types else ""
+
+    # Traffic estimate (rush-hour affects the urban portion most)
+    import datetime as _dt
+    hour = depart_hour if depart_hour is not None else (
+        _dt.datetime.now().hour + _dt.datetime.now().minute / 60)
+    factor, label = _rush_factor(hour)
+    base_s = r["duration_s"]
+    urban_frac = urban / total
+    # Rush hour mainly slows urban roads; expressways stay near free-flow.
+    extra_s = base_s * urban_frac * max(factor, 0)
+    worst_s = base_s + base_s * urban_frac * 0.6      # heaviest plausible delay
+
+    congested = ""
+    if factor > 0.2:
+        congested = (f"Leaving now is in {label}; expect city sections to be "
+                     f"congested. ")
+    elif factor > 0:
+        congested = f"Leaving now is {label} — light delays in town. "
+    else:
+        congested = f"Leaving now is {label}. "
+
+    eta_now = _fmt_dur(base_s + extra_s)
+    worst = _fmt_dur(worst_s)
+
+    # When is it jammed? name the rush windows that overlap urban travel.
+    jam_hint = ("Busiest times on the city parts: 7–9 AM and 4:30–7:30 PM. "
+                if urban_frac > 0.15 else
+                "Mostly highway/expressway, so rush hour has little effect. ")
+
+    return (
+        f"Route {idx+1} analysis — {r['dist_km']:.0f} km, normally {r['eta_text']}.\n"
+        f"{road_line}\n"
+        f"{congested}Estimated time now: about {eta_now}. Worst case in heavy "
+        f"traffic: up to {worst}.\n"
+        f"{jam_hint}"
+        f"(Road types are from map data; traffic timing is an estimate — no live "
+        f"traffic feed.)"
+    )
