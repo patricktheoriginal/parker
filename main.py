@@ -39,6 +39,7 @@ from actions.flight_finder     import flight_finder
 from actions.open_app          import open_app
 from actions.weather_report    import weather_action, rain_forecast, where_am_i, set_my_location
 from actions.maps_route         import route_directions, different_route, analyze_route
+from actions.nearby             import find_nearby, place_info
 from actions.send_message      import send_message
 from actions.make_call         import make_call
 from actions.reminder          import reminder
@@ -253,6 +254,39 @@ TOOL_DECLARATIONS = [
             "or 'is there a faster/shorter way'."
         ),
         "parameters": {"type": "OBJECT", "properties": {}},
+    },
+    {
+        "name": "find_nearby",
+        "description": (
+            "Finds nearby places (like Google Maps) — cafes, restaurants, ATMs, gas "
+            "stations, hotels, pharmacies, hospitals, supermarkets, etc. — around the "
+            "user's current location, or around a named place. Shows them on the map "
+            "with distances. Use when the user asks 'find X near me' or 'X nearby'."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "query":  {"type": "STRING", "description": "What to look for, e.g. 'cafe', 'ATM', 'gas station', 'restaurant'."},
+                "near":   {"type": "STRING", "description": "Optional place to search around; defaults to the user's current location."},
+                "radius": {"type": "INTEGER", "description": "Search radius in meters (200–5000, default 1500)."}
+            },
+            "required": ["query"]
+        },
+    },
+    {
+        "name": "place_info",
+        "description": (
+            "Gives information about a specific place — its address, type, and opening "
+            "hours/phone/website if known (from map data). Use when the user asks about "
+            "a particular place, its hours, or where it is. Coverage can be limited."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "place": {"type": "STRING", "description": "The place name or address."}
+            },
+            "required": ["place"]
+        },
     },
     {
         "name": "analyze_route",
@@ -966,6 +1000,14 @@ class ParkerLive:
             elif name == "analyze_route":
                 r = await loop.run_in_executor(None, lambda: analyze_route(parameters=args, player=self.ui))
                 result = r or "Route analyzed."
+
+            elif name == "find_nearby":
+                r = await loop.run_in_executor(None, lambda: find_nearby(parameters=args, player=self.ui))
+                result = r or "Places found."
+
+            elif name == "place_info":
+                r = await loop.run_in_executor(None, lambda: place_info(parameters=args, player=self.ui))
+                result = r or "Place info delivered."
 
             elif name == "browser_control":
                 r = await loop.run_in_executor(None, lambda: browser_control(parameters=args, player=self.ui))

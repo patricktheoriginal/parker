@@ -17,7 +17,7 @@ _OSRM_URL = "https://router.project-osrm.org/route/v1/driving"
 
 # Last computed route set — shared with the map view and "different route".
 _LAST = {"routes": [], "selected": 0, "origin": None, "dest": None,
-         "o_label": "", "d_label": ""}
+         "o_label": "", "d_label": "", "places": []}
 
 
 def _http_json(url: str, timeout: int = 15) -> dict:
@@ -115,7 +115,7 @@ def compute_routes(o: tuple, d: tuple, o_label: str, d_label: str,
         secs = r.get("traffic_s") or r["duration_s"]
         r["eta_text"] = _fmt_dur(secs)
     _LAST.update({"routes": routes, "selected": 0, "origin": o, "dest": d,
-                  "o_label": o_label, "d_label": d_label})
+                  "o_label": o_label, "d_label": d_label, "places": []})
     return routes
 
 
@@ -132,11 +132,20 @@ def select_next() -> int:
     return _LAST["selected"]
 
 
+def set_places(center_label: str, places: list) -> None:
+    """Cache a list of place pins to show on the map (nearby / place info).
+    Each place: {name, lat, lon, dist, hours}. Clears any active route."""
+    _LAST.update({"routes": [], "selected": 0, "places": places,
+                  "o_label": center_label,
+                  "d_label": f"{len(places)} place(s)"})
+
+
 def build_map_html() -> str | None:
-    """Return the full 3D map HTML for the cached routes (with data injected),
-    as a string — no file needed. Returns None if there are no routes."""
-    routes = _LAST["routes"]
-    if not routes:
+    """Return the full 3D map HTML (routes and/or place pins), as a string.
+    Returns None if there's nothing to show."""
+    routes = _LAST.get("routes") or []
+    places = _LAST.get("places") or []
+    if not routes and not places:
         return None
     from pathlib import Path
 
@@ -157,6 +166,7 @@ def build_map_html() -> str | None:
              "points": r["points"]}
             for r in routes
         ],
+        "places": places,
     }
     inject = f"<script>window.ROUTE_DATA = {json.dumps(data)};</script>"
     return html.replace("<head>", "<head>\n" + inject, 1)

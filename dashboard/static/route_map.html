@@ -58,11 +58,20 @@ const SAT_STYLE = {
   ]
 };
 
+const PLACES = ROUTE_DATA.places || [];
+const HAS_ROUTES = (ROUTE_DATA.routes || []).length > 0;
+
+function initCenter(){
+  if (HAS_ROUTES) return ROUTE_DATA.routes[0].points[0].slice().reverse();
+  if (PLACES.length) return [PLACES[0].lon, PLACES[0].lat];
+  return [105.85, 21.02];
+}
+
 const map = new maplibregl.Map({
   container: "map",
   style: SAT_STYLE,
-  center: ROUTE_DATA.routes[0].points[0].slice().reverse(),
-  zoom: 8, pitch: 60, bearing: -20, antialias: true
+  center: initCenter(),
+  zoom: HAS_ROUTES ? 8 : 14, pitch: 60, bearing: -20, antialias: true
 });
 map.addControl(new maplibregl.NavigationControl({visualizePitch:true}));
 
@@ -72,7 +81,21 @@ function bounds(points){
   return b;
 }
 
+function drawPlaces(){
+  if (!PLACES.length) return;
+  const b = new maplibregl.LngLatBounds();
+  PLACES.forEach((p) => {
+    new maplibregl.Marker({color:"#ffb300"})
+      .setLngLat([p.lon, p.lat])
+      .setPopup(new maplibregl.Popup().setText(p.name))
+      .addTo(map);
+    b.extend([p.lon, p.lat]);
+  });
+  if (PLACES.length > 1) map.fitBounds(b, { padding:60, pitch:55, duration:800, maxZoom:16 });
+}
+
 function drawRoutes(){
+  if (!HAS_ROUTES) return;
   ROUTE_DATA.routes.forEach((r, i) => {
     const id = "route"+i;
     const geo = { type:"Feature", geometry:{ type:"LineString",
@@ -113,21 +136,35 @@ window.selectRoute = selectRoute;   // callable from Parker
 function renderPanel(){
   const el = document.getElementById("routes");
   el.innerHTML = "";
-  ROUTE_DATA.routes.forEach((r,i) => {
-    const d = document.createElement("div");
-    d.className = "route" + (i===ROUTE_DATA.selected ? " sel" : "");
-    const name = r.summary ? (" via "+r.summary) : "";
-    d.innerHTML = `<div class="r-name">Route ${i+1}${name}</div>` +
-      `<div>${r.dist_km.toFixed(0)} km · ${r.eta_text}</div>` +
-      `<div class="r-an">${r.analysis}</div>`;
-    d.onclick = () => selectRoute(i);
-    el.appendChild(d);
-  });
-  document.querySelector("#panel h3").textContent =
-    `${ROUTE_DATA.o_label} → ${ROUTE_DATA.d_label}`;
+  if (HAS_ROUTES) {
+    ROUTE_DATA.routes.forEach((r,i) => {
+      const d = document.createElement("div");
+      d.className = "route" + (i===ROUTE_DATA.selected ? " sel" : "");
+      const name = r.summary ? (" via "+r.summary) : "";
+      d.innerHTML = `<div class="r-name">Route ${i+1}${name}</div>` +
+        `<div>${r.dist_km.toFixed(0)} km · ${r.eta_text}</div>` +
+        `<div class="r-an">${r.analysis}</div>`;
+      d.onclick = () => selectRoute(i);
+      el.appendChild(d);
+    });
+    document.querySelector("#panel h3").textContent =
+      `${ROUTE_DATA.o_label} → ${ROUTE_DATA.d_label}`;
+  } else if (PLACES.length) {
+    PLACES.forEach((p) => {
+      const d = document.createElement("div");
+      d.className = "route";
+      const dist = p.dist ? (p.dist < 1000 ? `${p.dist.toFixed(0)} m` : `${(p.dist/1000).toFixed(1)} km`) : "";
+      const hrs = p.hours ? ` · ${p.hours}` : "";
+      d.innerHTML = `<div class="r-name">${p.name}</div>` +
+        `<div class="r-an">${dist}${hrs}</div>`;
+      el.appendChild(d);
+    });
+    document.querySelector("#panel h3").textContent =
+      `Near ${ROUTE_DATA.o_label}`;
+  }
 }
 
-map.on("load", () => { drawRoutes(); renderPanel(); });
+map.on("load", () => { drawRoutes(); drawPlaces(); renderPanel(); });
 </script>
 </body>
 </html>
