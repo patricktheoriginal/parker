@@ -34,16 +34,57 @@ Now ask Parker: *"what's on my Mac"*, *"find my budget file on the Mac"*,
 *"get /Users/you/Documents/report.docx from the Mac"*.
 Fetched files land in `Downloads/ParkerRemote/` on the Windows PC.
 
-## 3. Over the internet (two different locations)
+## 3. Daily use — set it up once, then just leave the Mac on
 
-Don't port-forward. Run an authenticated tunnel to the agent's port instead —
-this is the AnyDesk-style approach (no open router port):
+### On the Mac (one-time)
 
 ```bash
-# Example with cloudflared (free):
-cloudflared tunnel --url http://localhost:8770
-# It prints an https URL — use THAT as remote_agent_url in Parker.
+# 1. Install auto-start: agent + tunnel start on login and keep the Mac awake.
+bash remote_agent/install_autostart.sh
 ```
+
+This keeps the Mac awake (via `caffeinate`) so the agent stays reachable, and
+runs everything on login. The current public URL is always written to:
+
+```
+~/.parker_agent_url.txt
+```
+
+To stop auto-start later: `bash remote_agent/install_autostart.sh --uninstall`.
+
+### On Windows (each time you want to use it)
+
+Nothing to launch separately — just start **Parker as usual**. It reads
+`remote_agent_url` + `remote_agent_token` from `config/api_keys.json` and talks
+to the Mac on demand. Then say *"what's on my Mac"*, *"find my report on the
+Mac"*, *"get <path> from the Mac"*.
+
+### Fixed URL (recommended) — named tunnel
+
+A quick tunnel's URL changes on every restart. To get a URL that never changes,
+use a named tunnel with a domain you own on Cloudflare (one-time):
+
+```bash
+cloudflared tunnel login                       # opens the browser; pick your domain
+cloudflared tunnel create parker               # creates a tunnel named 'parker'
+cloudflared tunnel route dns parker mac.yourdomain.com   # your fixed hostname
+```
+
+Then create `remote_agent/tunnel.conf`:
+
+```bash
+NAMED_NAME=parker
+NAMED_HOST=mac.yourdomain.com
+```
+
+Now `start_mac_agent.sh` uses the **fixed** URL `https://mac.yourdomain.com`.
+Put that in Parker's `remote_agent_url` once — it never changes again.
+
+### ⚠️ Sleep note
+
+If the Mac **sleeps**, the agent stops. The auto-start script keeps it awake
+with `caffeinate`, but if you manually put the Mac to sleep or shut it down,
+Parker can't reach it until it's on again.
 
 ## ⚠️ Security
 

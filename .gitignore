@@ -22,3 +22,4 @@ memory/long_term.json
 # OS
 .DS_Store
 Thumbs.db
+remote_agent/tunnel.conf
