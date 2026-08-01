@@ -58,9 +58,54 @@ def _find_call_button() -> tuple[int, int] | None:
     return None
 
 
+# Accessibility names/tooltips Zalo uses for the voice-call button, across
+# Vietnamese/English and versions.
+_CALL_NAMES = (
+    "gọi điện", "goi dien", "cuộc gọi thoại", "gọi thoại",
+    "voice call", "audio call", "call", "gọi", "goi",
+)
+
+
+def _click_call_button_uia() -> bool:
+    """Find and click Zalo's voice-call button via Windows UI Automation
+    (pywinauto). This reads the real control by its accessibility name/tooltip,
+    so it's far more reliable than guessing pixel coordinates. Windows only."""
+    try:
+        from pywinauto import Desktop
+    except Exception:
+        return False
+    try:
+        # Connect to the Zalo top-level window.
+        win = None
+        for w in Desktop(backend="uia").windows():
+            try:
+                if "zalo" in (w.window_text() or "").lower():
+                    win = w
+                    break
+            except Exception:
+                continue
+        if win is None:
+            return False
+        win.set_focus()
+        # Scan buttons for one whose name/tooltip matches a call label.
+        for ctrl in win.descendants(control_type="Button"):
+            try:
+                name = (ctrl.window_text() or "").lower()
+                # Skip video call — we want VOICE call.
+                if any(k in name for k in _CALL_NAMES) and "video" not in name:
+                    ctrl.click_input()
+                    return True
+            except Exception:
+                continue
+    except Exception as e:
+        print(f"[Call] UIA click failed: {e}")
+    return False
+
+
 def _call_zalo(receiver: str) -> str:
     """Open Zalo, find the contact, open the conversation, and start a voice
-    call by clicking the call button (or trying known shortcuts)."""
+    call. Prefers UI-Automation (finds the real call button), then an image
+    template, then a positional click, then shortcuts."""
     if not _open_app("Zalo"):
         return "Could not open Zalo."
     time.sleep(1.2)
@@ -69,7 +114,12 @@ def _call_zalo(receiver: str) -> str:
     pyautogui.press("enter")      # open the top contact result
     time.sleep(1.3)
 
-    # 1) Best: click the call button located by image template (if provided).
+    # 1) Best: click the real call button via UI Automation (no calibration).
+    if _click_call_button_uia():
+        time.sleep(0.4)
+        return f"Calling {receiver} on Zalo."
+
+    # 2) Click the call button located by image template (if provided).
     btn = _find_call_button()
     if btn:
         try:
