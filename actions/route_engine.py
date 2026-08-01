@@ -1,11 +1,15 @@
 """
-route_engine.py — multi-route planning with per-route analysis (OSRM, free).
+route_engine.py — multi-route planning with per-route analysis.
 
 Produces several alternative driving routes between two Vietnam points, each
 with distance, duration, and a short analysis (fastest / shortest / fewest
-turns). Routes come from the public OSRM server — free, no API key. Routes are
-cached so the user can ask for a "different route" and cycle through the
-alternatives, and so the 3D map view can render the currently-selected one.
+turns). Candidate routes come from BOTH:
+  - GraphHopper  (if 'graphhopper_key' is set in config — free tier, register at
+                  graphhopper.com) — often gives good alternatives
+  - OSRM         (public server, free, no key) — always used
+The results are merged and de-duplicated. Routes are cached so the user can ask
+for a "different route" and cycle through the alternatives, and so the 3D map
+view can render the currently-selected one.
 
 Coordinates are returned as [lat, lon] point lists for the map layer.
 """
@@ -85,7 +89,7 @@ def _osrm_routes(o, d) -> list:
                 "duration_s": r["duration"],
                 "traffic_s": None,
                 "turns": turns or None,
-                "summary": "",
+                "summary": "OSRM",
                 "points": pts,
                 "by_class": by_class,        # meters per road type
                 "road_names": names,         # ordered unique road names
@@ -96,18 +100,101 @@ def _osrm_routes(o, d) -> list:
         return []
 
 
+def _graphhopper_key() -> str:
+    try:
+        from memory.config_manager import load_api_keys
+        return (load_api_keys().get("graphhopper_key") or "").strip()
+    except Exception:
+        return ""
+
+
+def _graphhopper_routes(o, d) -> list:
+    """Alternative routes from GraphHopper (needs a free API key in config as
+    'graphhopper_key'). Returns [] if no key or on error."""
+    key = _graphhopper_key()
+    if not key:
+        return []
+    from urllib.parse import urlencode
+    params = [
+        ("point", f"{o[0]},{o[1]}"), ("point", f"{d[0]},{d[1]}"),
+        ("profile", "car"), ("points_encoded", "false"),
+        ("algorithm", "alternative_route"),
+        ("alternative_route.max_paths", "3"),
+        ("ch.disable", "true"), ("instructions", "true"),
+        ("key", key),
+    ]
+    url = "https://graphhopper.com/api/1/route?" + urlencode(params)
+    try:
+        data = _http_json(url, timeout=20)
+    except Exception as e:
+        print(f"[Route] GraphHopper failed: {e}")
+        return []
+
+    routes = []
+    for path in data.get("paths", []):
+        coords = path.get("points", {}).get("coordinates", [])  # [lon, lat]
+        pts = [[c[1], c[0]] for c in coords]
+        if len(pts) < 2:
+            continue
+        # Road-type breakdown from instructions (street_name / road_class).
+        by_class: dict = {}
+        names: list = []
+        instr = path.get("instructions", [])
+        for ins in instr:
+            nm = ins.get("street_name", "") or ""
+            dist = float(ins.get("distance", 0))
+            cls = _classify_road(nm, ins.get("road_ref", "") or "")
+            by_class[cls] = by_class.get(cls, 0.0) + dist
+            if nm and nm not in names:
+                names.append(nm)
+        routes.append({
+            "distance_m": path.get("distance", 0),
+            "duration_s": path.get("time", 0) / 1000.0,   # GH gives ms
+            "traffic_s": None,
+            "turns": len(instr) or None,
+            "summary": "GraphHopper",
+            "points": pts,
+            "by_class": by_class,
+            "road_names": names,
+        })
+    return routes
+
+
+def _dedupe_routes(routes: list) -> list:
+    """Drop near-duplicate routes (same distance & duration within a tolerance)."""
+    out = []
+    for r in routes:
+        dup = False
+        for o in out:
+            if (abs(r["distance_m"] - o["distance_m"]) < 500 and
+                    abs(r["duration_s"] - o["duration_s"]) < 60):
+                dup = True
+                break
+        if not dup:
+            out.append(r)
+    return out
+
+
 def compute_routes(o: tuple, d: tuple, o_label: str, d_label: str,
                    depart_epoch: int | None = None) -> list:
-    """Compute alternative routes (OSRM, free) and cache them.
+    """Compute alternative routes from GraphHopper (if a key is set) AND OSRM
+    (free, no key), merge and de-duplicate them, and cache the result.
 
-    `depart_epoch` is accepted for API compatibility but unused (OSRM has no
-    live traffic).
+    `depart_epoch` is accepted for API compatibility but unused (no live traffic).
     """
     routes: list = []
+    # GraphHopper first (often better alternatives) if a key is configured.
     try:
-        routes = _osrm_routes(o, d)
+        routes.extend(_graphhopper_routes(o, d))
+    except Exception as e:
+        print(f"[Route] GraphHopper failed: {e}")
+    # OSRM always (free) — adds coverage / a fallback.
+    try:
+        routes.extend(_osrm_routes(o, d))
     except Exception as e:
         print(f"[Route] OSRM failed: {e}")
+
+    routes = _dedupe_routes(routes)
 
     for r in routes:
         r["analysis"] = _analyze(r, routes)
