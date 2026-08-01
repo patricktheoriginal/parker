@@ -2915,17 +2915,29 @@ class MainWindow(QMainWindow):
         return w
 
     def _show_route_map(self, html: str):
-        """Slot — show the 3D route map INLINE in the content panel from an HTML
-        string via setHtml (no temp file). Falls back to a browser only if
-        WebEngine isn't installed."""
+        """Slot — show the 3D route map INLINE in the content panel.
+
+        Writes the HTML to a temp file and loads it with load(file://). This is
+        important: QWebEngineView.setHtml() sandboxes the content and blocks the
+        external MapLibre CDN and Esri satellite tiles, so the map came up blank.
+        Loading from a real file:// URL lets those resources load."""
         from PyQt6.QtCore import QUrl as _QUrl
-        # A base URL is needed so the CDN (MapLibre) and remote tiles load.
-        base = _QUrl("https://parker.local/")
+        import tempfile
+        from pathlib import Path as _Path
+
+        # Write to a temp file with a valid file:// URL (works on Windows too).
+        try:
+            fp = _Path(tempfile.gettempdir()) / "parker_route_map.html"
+            fp.write_text(html, encoding="utf-8")
+            url = _QUrl.fromLocalFile(str(fp))
+        except Exception as e:
+            print(f"[UI] route map temp write failed: {e}")
+            return
 
         view = getattr(self, "_route_view", None)
         if view is not None:
             try:
-                view.setHtml(html, base)
+                view.load(url)
                 view.show()
                 if hasattr(self, "_content_panel") and self._content_panel is not None:
                     self._content_panel.show()
@@ -2934,24 +2946,20 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 print(f"[UI] inline route map failed: {e}")
 
-        # Fallback: no inline view → separate WebEngine window.
+        # Fallback: separate WebEngine window, else the default browser.
         try:
             from PyQt6.QtWebEngineWidgets import QWebEngineView as _WEV
             if self._route_win is None:
                 self._route_win = _WEV()
                 self._route_win.setWindowTitle("Parker — 3D Route")
                 self._route_win.resize(900, 640)
-            self._route_win.setHtml(html, base)
+            self._route_win.load(url)
             self._route_win.show()
             self._route_win.raise_()
         except Exception:
-            # No WebEngine at all → write once to a temp file and open the browser.
-            import webbrowser, tempfile
-            from pathlib import Path as _Path
+            import webbrowser
             try:
-                p = _Path(tempfile.gettempdir()) / "parker_route_map.html"
-                p.write_text(html, encoding="utf-8")
-                webbrowser.open(p.as_uri())
+                webbrowser.open(url.toString())
             except Exception as e:
                 print(f"[UI] route map browser fallback failed: {e}")
 

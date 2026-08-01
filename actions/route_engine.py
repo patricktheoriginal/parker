@@ -182,7 +182,7 @@ def render_map(player=None) -> str | None:
         return None
     if player is not None:
         try:
-            player.show_route_map(html)      # HTML string, shown via setHtml
+            player.show_route_map(html)      # HTML string → UI writes a temp file + loads it
         except Exception as e:
             print(f"[Route] could not show map: {e}")
     return html
