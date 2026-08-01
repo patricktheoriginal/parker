@@ -148,6 +148,7 @@
     <label class="btn-attach" for="file-inp" title="Send file">📎</label>
     <input type="file" id="file-inp" multiple accept="*/*" style="display:none">
     <button id="mic-btn" onclick="doMic()" title="Voice command">🎤</button>
+    <button id="gps-btn" onclick="doShareGPS()" title="Share my GPS location">📍</button>
     <button class="btn btn-wake" id="wake" onclick="doWake()">WAKE</button>
     <button class="btn btn-send" onclick="doSend()">SEND</button>
   </footer>
@@ -390,6 +391,32 @@
     function doWake() {
       sys('Sending wake signal…');
       _authFetch('/api/wake', { method: 'POST' });
+    }
+
+    // ── Share this phone's real GPS location with Parker ───────────────────────
+    function doShareGPS() {
+      if (!navigator.geolocation) {
+        toast('GPS not supported on this device'); return;
+      }
+      sys('Getting your GPS location…');
+      navigator.geolocation.getCurrentPosition(
+        pos => {
+          const lat = pos.coords.latitude, lon = pos.coords.longitude;
+          _authFetch('/api/location', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ lat, lon, acc: pos.coords.accuracy })
+          }).then(r => {
+            if (r.ok) { sys(`Location shared (±${Math.round(pos.coords.accuracy)} m).`); toast('Location shared'); }
+            else { toast('Failed to send location'); }
+          }).catch(() => toast('Failed to send location'));
+        },
+        err => {
+          sys('Could not get GPS: ' + err.message);
+          toast('Enable location permission in your browser');
+        },
+        { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+      );
     }
 
     document.getElementById('inp').addEventListener('keydown', e => {

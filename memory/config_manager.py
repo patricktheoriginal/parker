@@ -83,6 +83,27 @@ def get_manual_location() -> str:
     return (load_api_keys().get("manual_location") or "").strip()
 
 
+def save_phone_gps(lat: float, lon: float, ts: float) -> None:
+    """Persist a GPS fix pushed from the paired phone (lat, lon, unix ts)."""
+    ensure_config_dir()
+    data: dict = {}
+    if CONFIG_FILE.exists():
+        try:
+            data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+    data["phone_gps"] = {"lat": float(lat), "lon": float(lon), "ts": float(ts)}
+    CONFIG_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def get_phone_gps() -> dict | None:
+    """Return the last phone GPS fix {'lat','lon','ts'} or None."""
+    g = load_api_keys().get("phone_gps")
+    if isinstance(g, dict) and "lat" in g and "lon" in g:
+        return g
+    return None
+
+
 def save_assistant_config(assistant_name: str, user_name: str) -> None:
     """Persist assistant name and user name to config."""
     ensure_config_dir()

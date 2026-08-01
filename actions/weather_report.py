@@ -256,6 +256,25 @@ def _ip_location() -> dict | None:
     return None
 
 
+_PHONE_GPS_TTL = 600     # a phone fix is considered current for 10 minutes
+
+
+def _phone_location() -> dict | None:
+    """A live GPS fix pushed from the paired phone (accurate to ~meters)."""
+    try:
+        from memory.config_manager import get_phone_gps
+    except Exception:
+        return None
+    g = get_phone_gps()
+    if not g:
+        return None
+    if (_time.time() - float(g.get("ts", 0))) > _PHONE_GPS_TTL:
+        return None            # stale — don't use an old phone fix
+    lat, lon = float(g["lat"]), float(g["lon"])
+    info = _reverse_geocode(lat, lon)
+    return {"lat": lat, "lon": lon, "source": "phone_gps", **info}
+
+
 def _manual_location() -> dict | None:
     """A location the user set explicitly ('I'm in Da Lat'), geocoded."""
     try:
@@ -285,7 +304,12 @@ def current_location(gps_required: bool = False) -> dict | None:
     global _LAST_GPS_STATUS
     now = _time.time()
 
-    # 1. Manual location always wins (and isn't cached elsewhere — it's cheap).
+    # 1. A fresh GPS fix from the paired phone is the most accurate source.
+    phone = _phone_location()
+    if phone:
+        return phone
+
+    # 2. A location the user set manually ('I'm in Da Lat').
     manual = _manual_location()
     if manual:
         return manual
@@ -446,10 +470,8 @@ def where_am_i(parameters: dict = None, player=None, session_memory=None) -> str
         _log(msg, player)
         return msg
     src = loc.get("source")
-    if src == "manual":
-        how = ""                       # user told us; state it plainly
-    elif src == "gps":
-        how = ""
+    if src in ("manual", "gps", "phone_gps"):
+        how = ""                       # precise source; state it plainly
     else:
         how = " (approximate, based on your network)"
     msg = f"You are in {loc['label']}{how}, sir."

@@ -604,6 +604,25 @@ class DashboardServer:
                 self._wake_callback()
             return JSONResponse({"ok": True})
 
+        @app.post("/api/location")
+        async def location_ep(req: Request):
+            """Receive a live GPS fix from the paired phone's browser."""
+            if not _auth(req):
+                return JSONResponse({"error": "Unauthorized"}, status_code=401)
+            try:
+                body = await req.json()
+                lat = float(body.get("lat"))
+                lon = float(body.get("lon"))
+            except Exception:
+                return JSONResponse({"error": "Bad coordinates"}, status_code=400)
+            try:
+                import time as _t
+                from memory.config_manager import save_phone_gps
+                save_phone_gps(lat, lon, _t.time())
+            except Exception as e:
+                return JSONResponse({"error": f"Save failed: {e}"}, status_code=500)
+            return JSONResponse({"ok": True})
+
         # ── Phone mic real-time audio → Gemini Live ──────────────────────────
 
         @app.websocket("/ws/phone-audio")
