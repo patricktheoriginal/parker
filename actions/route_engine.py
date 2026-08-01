@@ -181,20 +181,27 @@ def _dedupe_routes(routes: list) -> list:
 
 def compute_routes(o: tuple, d: tuple, o_label: str, d_label: str,
                    depart_epoch: int | None = None) -> list:
-    """Compute alternative routes from GraphHopper (if a key is set) AND OSRM
-    (free, no key), merge and de-duplicate them, and cache the result.
+    """Compute alternative routes from a self-hosted GraphHopper (if its local
+    server is running) AND OSRM (always), merge + de-duplicate, and cache them.
 
     `depart_epoch` is accepted for API compatibility but unused (no live traffic).
     """
     routes: list = []
-    # GraphHopper first (often better alternatives) if a key is configured.
+    # GraphHopper first (self-hosted, no key) if the local server is running.
     try:
-        routes.extend(_graphhopper_routes(o, d))
+        gh = _graphhopper_routes(o, d)
+        routes.extend(gh)
+        if gh:
+            print(f"[Route] GraphHopper: {len(gh)} route(s) from {_graphhopper_url()}")
+        else:
+            print(f"[Route] GraphHopper not available ({_graphhopper_url()}) — using OSRM.")
     except Exception as e:
         print(f"[Route] GraphHopper failed: {e}")
     # OSRM always (free) — adds coverage / a fallback.
     try:
-        routes.extend(_osrm_routes(o, d))
+        osrm = _osrm_routes(o, d)
+        routes.extend(osrm)
+        print(f"[Route] OSRM: {len(osrm)} route(s)")
     except Exception as e:
         print(f"[Route] OSRM failed: {e}")
 
