@@ -26,8 +26,7 @@ from urllib.request import Request, urlopen
 # Reuse the province-level geocoder from the weather module as a fallback,
 # plus the shared IP-based current-location lookup.
 from actions.weather_report import (
-    _geocode_vn as _geocode_province, _http_json, _VN_TZ,
-    current_location, gps_error_message,
+    _geocode_vn as _geocode_province, _http_json, _VN_TZ, current_location,
 )
 
 _OSRM_URL = "https://router.project-osrm.org/route/v1/driving"
@@ -243,23 +242,19 @@ def route_directions(parameters: dict, player=None, session_memory=None) -> str:
         _log(msg, player)
         return msg
 
-    # No origin given → use the device's actual current location. On Windows we
-    # require real GPS; if Location is off, ask the user to enable it rather than
-    # guessing a wrong starting point.
+    # No origin given → use the current location: a manually set location if the
+    # user gave one, else GPS (Windows), else an approximate IP-based location.
     o = None
     if not origin:
-        import platform as _pf
-        _is_win = _pf.system() == "Windows"
-        loc = current_location(gps_required=_is_win)
+        loc = current_location()
         if loc:
             o = (loc["lat"], loc["lon"], loc["label"])
             origin = loc["label"]
-        elif _is_win:
-            msg = gps_error_message()
+        else:
+            msg = ("Sir, I couldn't determine your starting point. Tell me where "
+                   "you are — for example, 'I'm in Da Nang' — then ask again.")
             _log(msg, player)
             return msg
-        else:
-            origin = "Hanoi"
 
     if o is None:
         o = _geocode_place(origin)

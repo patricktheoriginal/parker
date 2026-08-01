@@ -256,21 +256,42 @@ def _ip_location() -> dict | None:
     return None
 
 
+def _manual_location() -> dict | None:
+    """A location the user set explicitly ('I'm in Da Lat'), geocoded."""
+    try:
+        from memory.config_manager import get_manual_location
+    except Exception:
+        return None
+    place = get_manual_location()
+    if not place:
+        return None
+    geo = _geocode_vn(place)
+    if not geo:
+        return None
+    lat, lon, label = geo
+    return {"lat": lat, "lon": lon, "source": "manual",
+            "city": place, "region": "", "country": "", "label": label}
+
+
 def current_location(gps_required: bool = False) -> dict | None:
-    """Current location. On Windows, prefers the real GPS/OS location.
+    """Current location, in priority order:
+        1. A location the user set manually (most reliable — honours their intent)
+        2. Real GPS on Windows (OS Location Service), if available
+        3. IP-based city-level location
 
     Returns {'lat','lon','city','region','country','label','source'} or None.
-    - On Windows: tries the OS Location Service (GPS) first.
-    - If GPS is unavailable and gps_required is False, falls back to IP.
-    - If gps_required is True and GPS fails, returns None (caller reports the
-      "please enable Location Services" message).
     Cached briefly so a burst of calls doesn't repeat the lookup.
     """
     global _LAST_GPS_STATUS
     now = _time.time()
+
+    # 1. Manual location always wins (and isn't cached elsewhere — it's cheap).
+    manual = _manual_location()
+    if manual:
+        return manual
+
     cached = _LOC_CACHE.get("data")
     if cached and (now - _LOC_CACHE.get("t", 0)) < _LOC_TTL:
-        # Don't hand back an IP result when GPS was explicitly required.
         if not (gps_required and cached.get("source") != "gps"):
             return cached
 
@@ -417,15 +438,50 @@ def rain_forecast(parameters: dict, player=None, session_memory=None) -> str:
     return msg
 
 def where_am_i(parameters: dict = None, player=None, session_memory=None) -> str:
-    """Report the user's current location. On Windows uses real GPS."""
-    # On Windows, require the real GPS/OS location; ask to enable it if off.
-    loc = current_location(gps_required=(_OS_NAME == "Windows"))
+    """Report the user's current location (manual → GPS → IP)."""
+    loc = current_location()
     if not loc:
-        msg = (gps_error_message() if _OS_NAME == "Windows"
-               else "Sir, I couldn't determine your current location right now.")
+        msg = ("Sir, I couldn't determine your location. You can tell me where "
+               "you are — for example, say 'I'm in Da Nang'.")
         _log(msg, player)
         return msg
-    how = "" if loc.get("source") == "gps" else " (approximate)"
+    src = loc.get("source")
+    if src == "manual":
+        how = ""                       # user told us; state it plainly
+    elif src == "gps":
+        how = ""
+    else:
+        how = " (approximate, based on your network)"
     msg = f"You are in {loc['label']}{how}, sir."
+    _log(msg, player)
+    return msg
+
+
+def set_my_location(parameters: dict = None, player=None, session_memory=None) -> str:
+    """Set the user's current location manually (e.g. 'I'm in Da Lat').
+
+    Pass parameters={'place': '<city/province>'} to set, or an empty place to
+    clear it and go back to automatic detection.
+    """
+    from memory.config_manager import save_manual_location
+    params = parameters or {}
+    place = (params.get("place") or params.get("city") or params.get("location") or "").strip()
+
+    if not place or place.lower() in ("clear", "reset", "auto", "automatic", "none"):
+        save_manual_location("")
+        _LOC_CACHE.clear()
+        msg = "Sir, I've cleared your set location and will detect it automatically."
+        _log(msg, player)
+        return msg
+
+    # Verify it resolves to a real place before saving.
+    geo = _geocode_vn(place)
+    if not geo:
+        msg = f"Sir, I couldn't find '{place}'. Please give a Vietnamese city or province."
+        _log(msg, player)
+        return msg
+    save_manual_location(place)
+    _LOC_CACHE.clear()
+    msg = f"Got it, sir — I'll treat your current location as {geo[2]}."
     _log(msg, player)
     return msg

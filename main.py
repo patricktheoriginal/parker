@@ -37,7 +37,7 @@ from memory.memory_manager import (
 from actions.file_processor import file_processor
 from actions.flight_finder     import flight_finder
 from actions.open_app          import open_app
-from actions.weather_report    import weather_action, rain_forecast, where_am_i
+from actions.weather_report    import weather_action, rain_forecast, where_am_i, set_my_location
 from actions.maps_route         import route_directions
 from actions.send_message      import send_message
 from actions.reminder          import reminder
@@ -184,11 +184,28 @@ TOOL_DECLARATIONS = [
     {
         "name": "where_am_i",
         "description": (
-            "Returns the user's current location. On Windows it uses the real GPS "
-            "(OS Location Service); otherwise it is approximate (IP-based). Use "
-            "when the user asks where they are, their current location, or 'where am I'."
+            "Returns the user's current location. Uses a location the user set "
+            "manually if available, otherwise GPS (Windows) or an approximate "
+            "IP-based location. Use when the user asks where they are or 'where am I'."
         ),
         "parameters": {"type": "OBJECT", "properties": {}},
+    },
+    {
+        "name": "set_my_location",
+        "description": (
+            "Sets the user's current location manually. Use when the user states "
+            "where they are, e.g. 'I'm in Da Nang', 'set my location to Hue', or "
+            "'my location is Da Lat'. This is then used as the starting point for "
+            "routes and the default place for weather. Pass an empty place to clear "
+            "it and return to automatic detection."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "place": {"type": "STRING", "description": "The Vietnamese city or province the user is currently in. Empty to clear."}
+            },
+            "required": ["place"],
+        },
     },
     {
         "name": "route_directions",
@@ -796,6 +813,10 @@ class ParkerLive:
             elif name == "where_am_i":
                 r = await loop.run_in_executor(None, lambda: where_am_i(parameters=args, player=self.ui))
                 result = r or "Location delivered."
+
+            elif name == "set_my_location":
+                r = await loop.run_in_executor(None, lambda: set_my_location(parameters=args, player=self.ui))
+                result = r or "Location set."
 
             elif name == "route_directions":
                 r = await loop.run_in_executor(None, lambda: route_directions(parameters=args, player=self.ui))

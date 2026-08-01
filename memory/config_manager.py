@@ -61,6 +61,28 @@ def get_user_name() -> str:
     return load_api_keys().get("user_name", "")
 
 
+def save_manual_location(place: str) -> None:
+    """Persist a user-set current location (a place name string)."""
+    ensure_config_dir()
+    data: dict = {}
+    if CONFIG_FILE.exists():
+        try:
+            data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+    place = (place or "").strip()
+    if place:
+        data["manual_location"] = place
+    else:
+        data.pop("manual_location", None)
+    CONFIG_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def get_manual_location() -> str:
+    """Return the user-set current location, or '' if none."""
+    return (load_api_keys().get("manual_location") or "").strip()
+
+
 def save_assistant_config(assistant_name: str, user_name: str) -> None:
     """Persist assistant name and user name to config."""
     ensure_config_dir()
