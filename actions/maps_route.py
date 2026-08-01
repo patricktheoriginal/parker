@@ -231,13 +231,15 @@ def _sample_points(coords: list, n: int = 3) -> list:
 
 
 def _maps_endpoint(text: str, geo) -> str:
-    """Prefer exact coordinates; fall back to the raw place text for Maps."""
+    """Prefer the place TEXT (Google resolves names/addresses better than raw
+    coordinates); fall back to coordinates only if we have no text."""
+    t = (text or "").strip()
+    if t:
+        if "vietnam" not in t.lower() and "viet nam" not in t.lower():
+            t = f"{t}, Vietnam"
+        return t
     if geo:
         return f"{geo[0]},{geo[1]}"
-    t = text.strip()
-    # Bias plain addresses toward Vietnam if country isn't already present
-    if "vietnam" not in t.lower() and "viet nam" not in t.lower():
-        t = f"{t}, Vietnam"
     return t
 
 
@@ -375,9 +377,21 @@ def route_directions(parameters: dict, player=None, session_memory=None) -> str:
     except Exception as e:
         print(f"[Route] alternatives/map failed: {e}")
 
+    # Google Maps resolves place names/addresses better than raw coordinates, so
+    # pass the exact text the user asked for (biased to Vietnam). This makes the
+    # Google Maps route match what was requested instead of an OSM point that may
+    # be slightly off.
+    def _gmaps_place(text: str, lat: float, lon: float) -> str:
+        t = (text or "").strip()
+        if not t:
+            return f"{lat},{lon}"
+        if "vietnam" not in t.lower() and "viet nam" not in t.lower():
+            t = f"{t}, Vietnam"
+        return t
+
     gmaps = ("https://www.google.com/maps/dir/?api=1"
-             f"&origin={o_lat},{o_lon}"
-             f"&destination={d_lat},{d_lon}"
+             f"&origin={quote_plus(_gmaps_place(origin, o_lat, o_lon))}"
+             f"&destination={quote_plus(_gmaps_place(dest, d_lat, d_lon))}"
              "&travelmode=driving")
     opened = False
     try:

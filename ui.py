@@ -2945,8 +2945,13 @@ class MainWindow(QMainWindow):
             self._route_win.raise_()
         except Exception:
             # WebEngine not installed → open in the external browser.
+            # Use as_uri() so the file:// path is valid on Windows (backslashes).
             import webbrowser
-            webbrowser.open(f"file://{html_path}")
+            from pathlib import Path as _Path
+            try:
+                webbrowser.open(_Path(html_path).as_uri())
+            except Exception:
+                webbrowser.open(html_path)
 
     def _show_content(self, title: str, text: str):
         """Slot — runs on Qt main thread. Updates and shows the content panel."""
