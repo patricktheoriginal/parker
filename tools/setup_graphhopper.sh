@@ -27,13 +27,24 @@ PBF_URL="https://download.geofabrik.de/asia/vietnam-latest.osm.pbf"
 
 echo "=== GraphHopper self-host setup (Vietnam) ==="
 
-command -v java >/dev/null 2>&1 || {
-  echo "Java not found. Install a JDK 17+ first:"
-  echo "  macOS:   brew install openjdk   (then follow brew's PATH note)"
+# Find a working Java. macOS's /usr/bin/java is a stub if no JDK is installed,
+# so prefer Homebrew's OpenJDK when present.
+JAVA=""
+for cand in \
+  "/opt/homebrew/opt/openjdk/bin/java" \
+  "/usr/local/opt/openjdk/bin/java" \
+  "$(command -v java 2>/dev/null)"; do
+  if [ -x "$cand" ] && "$cand" -version >/dev/null 2>&1; then
+    JAVA="$cand"; break
+  fi
+done
+if [ -z "$JAVA" ]; then
+  echo "Java not found. Install a JDK first:"
+  echo "  macOS:   brew install openjdk"
   echo "  Linux:   sudo apt install default-jdk"
   exit 1
-}
-echo "Java: $(java -version 2>&1 | head -1)"
+fi
+echo "Java: $("$JAVA" -version 2>&1 | head -1)"
 
 [ -f "$JAR" ]  || { echo "Downloading GraphHopper…"; \
   curl -L -o "$JAR" "https://repo1.maven.org/maven2/com/graphhopper/graphhopper-web/11.0/graphhopper-web-11.0.jar"; }
@@ -44,4 +55,4 @@ echo "Java: $(java -version 2>&1 | head -1)"
 
 echo ""
 echo "Starting GraphHopper on http://localhost:8989 (first run builds the graph)…"
-exec java -Xmx4g -Ddw.graphhopper.datareader.file="$PBF" -jar "$JAR" server "$CONF"
+exec "$JAVA" -Xmx4g -Ddw.graphhopper.datareader.file="$PBF" -jar "$JAR" server "$CONF"
