@@ -144,22 +144,32 @@ $ErrorActionPreference = 'Stop'
 $inv = [System.Globalization.CultureInfo]::InvariantCulture
 function Out-Pos($lat,$lon){ Write-Output ("OK|" + $lat.ToString($inv) + "|" + $lon.ToString($inv)) }
 
+# Correctly await a WinRT IAsyncOperation[T] from PowerShell.
+function Await($op, $resultType) {
+    $m = [System.WindowsRuntimeSystemExtensions].GetMethods() |
+        Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and
+                       $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' } |
+        Select-Object -First 1
+    $m = $m.MakeGenericMethod($resultType)
+    $t = $m.Invoke($null, @($op))
+    $t.Wait(20000) | Out-Null
+    return $t.Result
+}
+
 # --- Method A: WinRT Geolocator ---
 try {
     $null = [Windows.Devices.Geolocation.Geolocator,Windows.Devices.Geolocation,ContentType=WindowsRuntime]
-    $acc = [Windows.Devices.Geolocation.Geolocator]::RequestAccessAsync()
-    while ($acc.Status -eq 0) { Start-Sleep -Milliseconds 80 }
-    $status = $acc.GetResults()
+    $accType = [Windows.Devices.Geolocation.GeolocationAccessStatus]
+    $status  = Await ([Windows.Devices.Geolocation.Geolocator]::RequestAccessAsync()) $accType
     if ($status -ne [Windows.Devices.Geolocation.GeolocationAccessStatus]::Allowed) {
         Write-Output "DENIED"; exit
     }
     $geo = New-Object Windows.Devices.Geolocation.Geolocator
-    $geo.DesiredAccuracy = [Windows.Devices.Geolocation.PositionAccuracy]::High
-    $op = $geo.GetGeopositionAsync()
-    $spin = 0
-    while ($op.Status -eq 0 -and $spin -lt 200) { Start-Sleep -Milliseconds 100; $spin++ }
-    if ($op.Status -eq 1) {
-        $p = $op.GetResults().Coordinate.Point.Position
+    $geo.DesiredAccuracyInMeters = 100
+    $posType = [Windows.Devices.Geolocation.Geoposition]
+    $pos = Await ($geo.GetGeopositionAsync()) $posType
+    if ($pos -ne $null) {
+        $p = $pos.Coordinate.Point.Position
         Out-Pos $p.Latitude $p.Longitude; exit
     }
 } catch { }
@@ -263,7 +273,10 @@ def current_location(gps_required: bool = False) -> dict | None:
     result = None
     if _OS_NAME == "Windows":
         result, _LAST_GPS_STATUS = _windows_gps()
-        if result is None and gps_required:
+        # Only hard-fail when the user genuinely denied/disabled location.
+        # If location is allowed but the device just can't get a fix (no_fix)
+        # or the lookup errored, fall back to IP so the feature still works.
+        if result is None and gps_required and _LAST_GPS_STATUS == "denied":
             return None            # caller inspects _LAST_GPS_STATUS for the message
     if result is None:
         result = _ip_location()
