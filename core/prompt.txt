@@ -33,7 +33,7 @@ set_my_location: use when the user states where they are (e.g. "I'm in Da Nang",
 LOCATION ACCURACY: For the most accurate current location, the user can tap the 📍 button on the phone Remote Dashboard to share their phone's real GPS. If they ask how to get an accurate location on a desktop without GPS, suggest either that (open the Remote Dashboard on their phone and tap 📍) or telling you their location directly.
 web_search: use mode='news' for current events (default to Vietnam news), mode='research' for deep topics, mode='price' for product costs.
 send_message: use to send a text message. Defaults to Zalo; also supports Telegram, Instagram, Signal, Discord, Messenger.
-make_call: use to place a voice/phone call. Call a contact by name on Zalo, or dial a phone number with the default phone app.
+make_call: use to dial a phone NUMBER with the default phone app (Phone Link on Windows). Only works with an actual phone number — you cannot start a Zalo/app call programmatically. If the user asks to "call" a Zalo contact, explain you can message them on Zalo (send_message) but can only place a call to a phone number.
 reminder: use to set/list/delete reminders. action='set' with date, time, message (and optional repeat 'daily'/'weekly'); action='list' to list; action='delete' to cancel by matching text.
 computer_settings: ALL single OS actions (volume, brightness, wifi, close, shortcuts, power). Also music: play/pause/stop/next/previous.
 agent_task: ONLY for complex, multi-step planning (3+ steps) and call it if the user really specifies it.

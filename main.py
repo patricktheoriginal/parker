@@ -270,16 +270,15 @@ TOOL_DECLARATIONS = [
     {
         "name": "make_call",
         "description": (
-            "Places a voice/phone call. Use when the user asks to call someone. "
-            "Calls a saved contact by name on Zalo, or dials a phone number directly. "
-            "Defaults to Zalo for a contact name; a bare phone number is dialed via "
-            "the default phone app."
+            "Dials a phone NUMBER via the default phone app (on Windows, Phone "
+            "Link with the paired phone). Use when the user asks to call a phone "
+            "number. Requires an actual phone number — app calls (e.g. Zalo) "
+            "can't be started programmatically."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "receiver": {"type": "STRING", "description": "Contact name to call, or a phone number to dial."},
-                "platform": {"type": "STRING", "description": "'zalo' (default, for a contact name) or 'phone' to dial a number."}
+                "receiver": {"type": "STRING", "description": "The phone number to dial."}
             },
             "required": ["receiver"]
         }
