@@ -105,6 +105,8 @@ import subprocess as _subprocess
 _LOC_CACHE: dict = {}          # cached result of the last successful lookup
 _LOC_TTL = 900                 # re-check at most every 15 minutes
 _OS_NAME = _platform.system()  # "Windows" | "Darwin" | "Linux"
+# Last Windows GPS attempt status: 'ok' | 'denied' | 'no_fix' | 'error' | ''
+_LAST_GPS_STATUS = ""
 
 
 def _reverse_geocode(lat: float, lon: float) -> dict:
@@ -130,42 +132,88 @@ def _reverse_geocode(lat: float, lon: float) -> dict:
                 "label": f"{lat:.4f}, {lon:.4f}"}
 
 
-def _windows_gps() -> dict | None:
+# PowerShell that tries the modern WinRT Geolocator first (works correctly with
+# the Windows 10/11 Location Service and reports the real access status), then
+# falls back to the legacy GeoCoordinateWatcher. It prints one of:
+#   OK|<lat>|<lon>      – got a position
+#   DENIED              – Location off or app not allowed
+#   NOFIX               – Location on but no position yet
+#   ERROR|<message>     – something else went wrong
+_WIN_GPS_PS = r"""
+$ErrorActionPreference = 'Stop'
+$inv = [System.Globalization.CultureInfo]::InvariantCulture
+function Out-Pos($lat,$lon){ Write-Output ("OK|" + $lat.ToString($inv) + "|" + $lon.ToString($inv)) }
+
+# --- Method A: WinRT Geolocator ---
+try {
+    $null = [Windows.Devices.Geolocation.Geolocator,Windows.Devices.Geolocation,ContentType=WindowsRuntime]
+    $acc = [Windows.Devices.Geolocation.Geolocator]::RequestAccessAsync()
+    while ($acc.Status -eq 0) { Start-Sleep -Milliseconds 80 }
+    $status = $acc.GetResults()
+    if ($status -ne [Windows.Devices.Geolocation.GeolocationAccessStatus]::Allowed) {
+        Write-Output "DENIED"; exit
+    }
+    $geo = New-Object Windows.Devices.Geolocation.Geolocator
+    $geo.DesiredAccuracy = [Windows.Devices.Geolocation.PositionAccuracy]::High
+    $op = $geo.GetGeopositionAsync()
+    $spin = 0
+    while ($op.Status -eq 0 -and $spin -lt 200) { Start-Sleep -Milliseconds 100; $spin++ }
+    if ($op.Status -eq 1) {
+        $p = $op.GetResults().Coordinate.Point.Position
+        Out-Pos $p.Latitude $p.Longitude; exit
+    }
+} catch { }
+
+# --- Method B: legacy GeoCoordinateWatcher ---
+try {
+    Add-Type -AssemblyName System.Device
+    $w = New-Object System.Device.Location.GeoCoordinateWatcher('High')
+    $null = $w.TryStart($true, [TimeSpan]::FromSeconds(12))
+    if ($w.Permission -eq [System.Device.Location.GeoPositionPermission]::Denied) {
+        Write-Output "DENIED"; exit
+    }
+    $c = $w.Position.Location
+    if ($c.IsUnknown) { Write-Output "NOFIX"; exit }
+    Out-Pos $c.Latitude $c.Longitude; exit
+} catch {
+    Write-Output ("ERROR|" + $_.Exception.Message); exit
+}
+Write-Output "NOFIX"
+"""
+
+
+def _windows_gps() -> tuple[dict | None, str]:
     """Real device location on Windows via the OS Location Service.
 
-    Uses .NET's GeoCoordinateWatcher (built into Windows — no extra Python
-    package). Returns {'lat','lon',...} or None if Location is off / denied /
-    unavailable. Requires the user to enable Location Services in Windows
-    Settings and allow desktop apps to access location.
+    Returns (result_dict_or_None, status) where status is one of:
+    'ok' | 'denied' | 'no_fix' | 'error'. Requires Location Services enabled
+    and desktop apps allowed to access location.
     """
     if _OS_NAME != "Windows":
-        return None
-    # PowerShell: start the watcher, wait for a fix, print "lat,lon".
-    ps = (
-        "Add-Type -AssemblyName System.Device;"
-        "$w = New-Object System.Device.Location.GeoCoordinateWatcher "
-        "'High';"
-        "$null = $w.TryStart($true, [TimeSpan]::FromSeconds(8));"
-        "$c = $w.Position.Location;"
-        "if ($c.IsUnknown) { Write-Output 'UNKNOWN' } "
-        "else { Write-Output ($c.Latitude.ToString([System.Globalization.CultureInfo]::InvariantCulture) "
-        "+ ',' + $c.Longitude.ToString([System.Globalization.CultureInfo]::InvariantCulture)) }"
-    )
+        return None, "error"
     try:
         r = _subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
-            capture_output=True, text=True, timeout=20,
+            ["powershell", "-NoProfile", "-NonInteractive",
+             "-ExecutionPolicy", "Bypass", "-Command", _WIN_GPS_PS],
+            capture_output=True, text=True, timeout=35,
             creationflags=getattr(_subprocess, "CREATE_NO_WINDOW", 0),
         )
         out = (r.stdout or "").strip()
-        if not out or "UNKNOWN" in out:
-            return None
-        lat_s, lon_s = out.splitlines()[-1].split(",")
-        lat, lon = float(lat_s), float(lon_s)
-        info = _reverse_geocode(lat, lon)
-        return {"lat": lat, "lon": lon, "source": "gps", **info}
-    except Exception:
-        return None
+        line = out.splitlines()[-1].strip() if out else ""
+        if line.startswith("OK|"):
+            _, lat_s, lon_s = line.split("|", 2)
+            lat, lon = float(lat_s), float(lon_s)
+            info = _reverse_geocode(lat, lon)
+            return {"lat": lat, "lon": lon, "source": "gps", **info}, "ok"
+        if line == "DENIED":
+            return None, "denied"
+        if line == "NOFIX":
+            return None, "no_fix"
+        print(f"[Location] Windows GPS unexpected output: {out!r} err={r.stderr!r}")
+        return None, "error"
+    except Exception as e:
+        print(f"[Location] Windows GPS failed: {e}")
+        return None, "error"
 
 
 def _ip_location() -> dict | None:
@@ -204,6 +252,7 @@ def current_location(gps_required: bool = False) -> dict | None:
       "please enable Location Services" message).
     Cached briefly so a burst of calls doesn't repeat the lookup.
     """
+    global _LAST_GPS_STATUS
     now = _time.time()
     cached = _LOC_CACHE.get("data")
     if cached and (now - _LOC_CACHE.get("t", 0)) < _LOC_TTL:
@@ -213,9 +262,9 @@ def current_location(gps_required: bool = False) -> dict | None:
 
     result = None
     if _OS_NAME == "Windows":
-        result = _windows_gps()
+        result, _LAST_GPS_STATUS = _windows_gps()
         if result is None and gps_required:
-            return None            # caller will ask the user to enable GPS
+            return None            # caller inspects _LAST_GPS_STATUS for the message
     if result is None:
         result = _ip_location()
 
@@ -223,6 +272,22 @@ def current_location(gps_required: bool = False) -> dict | None:
         _LOC_CACHE["data"] = result
         _LOC_CACHE["t"] = now
     return result
+
+
+def gps_error_message() -> str:
+    """A user-facing message tailored to why the last Windows GPS lookup failed."""
+    if _LAST_GPS_STATUS == "no_fix":
+        return ("Sir, Location Services is on, but Windows couldn't get a position "
+                "fix yet. Please wait a few seconds near a window or with Wi-Fi on, "
+                "then ask again.")
+    if _LAST_GPS_STATUS == "error":
+        return ("Sir, I couldn't read your GPS location — the Windows location "
+                "lookup failed. Make sure Location Services is on and try again.")
+    # denied or unknown
+    return ("Sir, I couldn't get your GPS location. Please enable Location "
+            "Services in Windows Settings (Privacy & security → Location), turn on "
+            "'Let apps access your location' and 'Let desktop apps access your "
+            "location', then ask again.")
 
 
 def _geocode_search(name: str, count: int = 5) -> list[dict]:
@@ -339,12 +404,8 @@ def where_am_i(parameters: dict = None, player=None, session_memory=None) -> str
     # On Windows, require the real GPS/OS location; ask to enable it if off.
     loc = current_location(gps_required=(_OS_NAME == "Windows"))
     if not loc:
-        if _OS_NAME == "Windows":
-            msg = ("Sir, I couldn't get your GPS location. Please enable Location "
-                   "Services in Windows Settings (Privacy & security → Location) "
-                   "and allow desktop apps to access your location.")
-        else:
-            msg = "Sir, I couldn't determine your current location right now."
+        msg = (gps_error_message() if _OS_NAME == "Windows"
+               else "Sir, I couldn't determine your current location right now.")
         _log(msg, player)
         return msg
     how = "" if loc.get("source") == "gps" else " (approximate)"

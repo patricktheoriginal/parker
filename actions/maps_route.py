@@ -26,7 +26,8 @@ from urllib.request import Request, urlopen
 # Reuse the province-level geocoder from the weather module as a fallback,
 # plus the shared IP-based current-location lookup.
 from actions.weather_report import (
-    _geocode_vn as _geocode_province, _http_json, _VN_TZ, current_location,
+    _geocode_vn as _geocode_province, _http_json, _VN_TZ,
+    current_location, gps_error_message,
 )
 
 _OSRM_URL = "https://router.project-osrm.org/route/v1/driving"
@@ -254,10 +255,7 @@ def route_directions(parameters: dict, player=None, session_memory=None) -> str:
             o = (loc["lat"], loc["lon"], loc["label"])
             origin = loc["label"]
         elif _is_win:
-            msg = ("Sir, I need your current location to plan this route. Please "
-                   "enable Location Services in Windows Settings (Privacy & "
-                   "security → Location) and allow desktop apps to access it, then "
-                   "ask again.")
+            msg = gps_error_message()
             _log(msg, player)
             return msg
         else:
