@@ -70,14 +70,41 @@ def _api_headers(token):
     return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
 
-def _active_device(token) -> str | None:
+def _list_devices(token) -> list:
     try:
         d = _http(f"{_API}/me/player/devices", headers=_api_headers(token))
-        devs = d.get("devices", [])
-        active = next((x for x in devs if x.get("is_active")), None)
-        return (active or (devs[0] if devs else {})).get("id")
+        return d.get("devices", []) or []
     except Exception:
-        return None
+        return []
+
+
+def _active_device(token) -> str | None:
+    """A device id to play on, PREFERRING a genuinely active one. Falls back to
+    any known device (Spotify remembers offline ones), so callers that need a
+    live device should verify playback afterwards with _verify_playing()."""
+    devs = _list_devices(token)
+    active = next((x for x in devs if x.get("is_active")), None)
+    return (active or (devs[0] if devs else {})).get("id")
+
+
+def _has_active_device(token) -> bool:
+    """True only if Spotify reports a device that is actually active/live."""
+    return any(x.get("is_active") for x in _list_devices(token))
+
+
+def _verify_playing(token) -> bool:
+    """Confirm playback actually started: /me/player must report is_playing.
+    Spotify accepts a play request for an offline/stale device without error,
+    so this guards against falsely reporting success."""
+    for _ in range(3):
+        time.sleep(0.7)
+        try:
+            d = _http(f"{_API}/me/player", headers=_api_headers(token))
+        except Exception:
+            d = {}
+        if d and d.get("is_playing"):
+            return True
+    return False
 
 
 def _play_via_api(query: str) -> str | None:
@@ -102,33 +129,41 @@ def _play_via_api(query: str) -> str | None:
         print(f"[Spotify] search failed: {e}")
         return None
 
-    # Find a device to play on.
-    device = _active_device(token)
-    if not device:
-        # Try to open the desktop app so a device appears, then retry once.
+    # Need a genuinely active device (not a stale/offline one Spotify remembers).
+    if not _has_active_device(token):
         try:
             from actions.open_app import open_app
             open_app(parameters={"app_name": "Spotify"})
-            time.sleep(3)
-            device = _active_device(token)
         except Exception:
             pass
-    if not device:
-        return ("Sir, no active Spotify device. Open Spotify on this PC or your "
-                "phone, then ask again.")
+        for _ in range(10):
+            time.sleep(1)
+            if _has_active_device(token):
+                break
+    if not _has_active_device(token):
+        return ("Sir, Spotify isn't running on any device yet. I opened it — "
+                "give it a moment and play something once, then ask again.")
+    device = _active_device(token)
 
     # Start playback.
     try:
         body = json.dumps({"uris": [uri]}).encode()
         _http(f"{_API}/me/player/play?device_id={device}",
               data=body, method="PUT", headers=_api_headers(token))
-        return f"Playing '{name}' by {artist} on Spotify."
     except urllib.error.HTTPError as e:
         if e.code == 403:
             return ("Sir, Spotify playback control needs a Premium account.")
+        if e.code == 404:
+            return ("Sir, Spotify has no active device. Open it and play any "
+                    "song once, then ask again.")
         return f"Sir, I couldn't start playback: {e}"
     except Exception as e:
         return f"Sir, I couldn't start playback: {e}"
+
+    if not _verify_playing(token):
+        return ("Sir, I sent the play command but Spotify didn't start. Open "
+                "Spotify, play any song once to wake the device, then ask again.")
+    return f"Playing '{name}' by {artist} on Spotify."
 
 
 def _play_liked_via_api(shuffle: bool = True) -> str | None:
@@ -162,19 +197,23 @@ def _play_liked_via_api(shuffle: bool = True) -> str | None:
         import random
         random.shuffle(uris)
 
-    # Find a device to play on (open the app if needed).
-    device = _active_device(token)
-    if not device:
+    # Need a genuinely active device. If none, open the app and wait for it to
+    # come online — don't just grab a stale/offline device id.
+    if not _has_active_device(token):
         try:
             from actions.open_app import open_app
             open_app(parameters={"app_name": "Spotify"})
-            time.sleep(3)
-            device = _active_device(token)
         except Exception:
             pass
-    if not device:
-        return ("Sir, no active Spotify device. Open Spotify on this PC or your "
-                "phone, then ask again.")
+        # Wait up to ~10s for Spotify to register as an active device.
+        for _ in range(10):
+            time.sleep(1)
+            if _has_active_device(token):
+                break
+    if not _has_active_device(token):
+        return ("Sir, Spotify isn't running on any device yet. I opened it — "
+                "give it a moment and play something once, then ask again.")
+    device = _active_device(token)
 
     # Turn on shuffle on the player too (best-effort), then play the URIs.
     try:
@@ -188,13 +227,21 @@ def _play_liked_via_api(shuffle: bool = True) -> str | None:
         body = json.dumps({"uris": uris[:100]}).encode()
         _http(f"{_API}/me/player/play?device_id={device}",
               data=body, method="PUT", headers=_api_headers(token))
-        return f"Playing your Liked Songs on Spotify ({len(uris)} tracks, shuffled)."
     except urllib.error.HTTPError as e:
         if e.code == 403:
             return "Sir, Spotify playback control needs a Premium account."
+        if e.code == 404:
+            return ("Sir, Spotify has no active device to play on. Open Spotify "
+                    "and play any song once, then ask again.")
         return f"Sir, I couldn't start playback: {e}"
     except Exception as e:
         return f"Sir, I couldn't start playback: {e}"
+
+    # Confirm it really started before claiming success.
+    if not _verify_playing(token):
+        return ("Sir, I sent the play command but Spotify didn't start. Open "
+                "Spotify, play any song once to wake the device, then ask again.")
+    return f"Playing your Liked Songs on Spotify ({len(uris)} tracks, shuffled)."
 
 
 def _play_liked_via_ui() -> str:
@@ -360,30 +407,40 @@ def _resolve_playlist(selector: str) -> dict | None:
 
 
 def _play_context(token, context_uri: str) -> str:
-    """Start playback of a playlist/album context on the active device."""
-    device = _active_device(token)
-    if not device:
+    """Start playback of a playlist/album context on a genuinely active device.
+    Returns "" on confirmed success, or an error message."""
+    if not _has_active_device(token):
         try:
             from actions.open_app import open_app
             open_app(parameters={"app_name": "Spotify"})
-            time.sleep(3)
-            device = _active_device(token)
         except Exception:
             pass
-    if not device:
-        return ("Sir, no active Spotify device. Open Spotify on this PC or your "
-                "phone, then ask again.")
+        for _ in range(10):
+            time.sleep(1)
+            if _has_active_device(token):
+                break
+    if not _has_active_device(token):
+        return ("Sir, Spotify isn't running on any device yet. I opened it — "
+                "give it a moment and play something once, then ask again.")
+    device = _active_device(token)
     try:
         body = json.dumps({"context_uri": context_uri}).encode()
         _http(f"{_API}/me/player/play?device_id={device}",
               data=body, method="PUT", headers=_api_headers(token))
-        return ""                          # empty = success (caller adds name)
     except urllib.error.HTTPError as e:
         if e.code == 403:
             return "Sir, Spotify playback control needs a Premium account."
+        if e.code == 404:
+            return ("Sir, Spotify has no active device. Open it and play any "
+                    "song once, then ask again.")
         return f"Sir, I couldn't start playback: {e}"
     except Exception as e:
         return f"Sir, I couldn't start playback: {e}"
+
+    if not _verify_playing(token):
+        return ("Sir, I sent the play command but Spotify didn't start. Open "
+                "Spotify, play any song once to wake the device, then ask again.")
+    return ""                              # empty = confirmed success
 
 
 def play_playlist(parameters: dict = None, player=None, session_memory=None) -> str:
