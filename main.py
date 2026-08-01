@@ -38,7 +38,7 @@ from actions.file_processor import file_processor
 from actions.flight_finder     import flight_finder
 from actions.open_app          import open_app
 from actions.weather_report    import weather_action, rain_forecast, where_am_i, set_my_location
-from actions.maps_route         import route_directions
+from actions.maps_route         import route_directions, different_route
 from actions.send_message      import send_message
 from actions.make_call         import make_call
 from actions.reminder          import reminder
@@ -226,23 +226,33 @@ TOOL_DECLARATIONS = [
     {
         "name": "route_directions",
         "description": (
-            "Plans the fastest driving route between two places in Vietnam and "
-            "opens it on Google Maps. Returns the distance, driving time, a concrete "
-            "depart/arrive time, and the weather along the route. Use this whenever "
-            "the user asks how to get somewhere, the route/directions to a place, "
-            "how far or how long a drive is, or the best time to leave. "
-            "Works with cities, provinces, landmarks, AND specific street addresses. "
+            "Plans driving routes between two places in Vietnam and shows a 3D map "
+            "inside Parker with alternative routes and per-route analysis (fastest, "
+            "shortest, traffic). Returns distance, driving time, depart/arrive time, "
+            "and weather along the route. Use whenever the user asks how to get "
+            "somewhere, directions, how far/long a drive is, or the best time to leave. "
+            "Works with cities, provinces, landmarks, and specific street addresses. "
             "If the user does not give a starting point, leave 'origin' empty."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "destination": {"type": "STRING", "description": "Destination in Vietnam — a city, province, landmark, or a specific street address (e.g. '208 Nguyen Huu Canh, Binh Thanh, Ho Chi Minh City'). Pass the full address exactly as the user said it."},
+                "destination": {"type": "STRING", "description": "Destination in Vietnam — a city, province, landmark, or a specific street address. Pass the full address exactly as the user said it."},
                 "origin":      {"type": "STRING", "description": "Starting place or full address in Vietnam. Leave empty if the user did not specify one — it will use the user's current location automatically."},
                 "depart_time": {"type": "STRING", "description": "Desired departure time, e.g. '7am', '15:30', or 'now'. Default is now."}
             },
             "required": ["destination"]
         }
+    },
+    {
+        "name": "different_route",
+        "description": (
+            "Shows a DIFFERENT/alternative route for the trip just planned, cycling "
+            "through the alternatives on the 3D map with analysis for each. Use when "
+            "the user says 'different route', 'another way', 'show me alternatives', "
+            "or 'is there a faster/shorter way'."
+        ),
+        "parameters": {"type": "OBJECT", "properties": {}},
     },
     {
         "name": "send_message",
@@ -931,6 +941,10 @@ class ParkerLive:
             elif name == "route_directions":
                 r = await loop.run_in_executor(None, lambda: route_directions(parameters=args, player=self.ui))
                 result = r or "Route delivered."
+
+            elif name == "different_route":
+                r = await loop.run_in_executor(None, lambda: different_route(parameters=args, player=self.ui))
+                result = r or "Alternative route shown."
 
             elif name == "browser_control":
                 r = await loop.run_in_executor(None, lambda: browser_control(parameters=args, player=self.ui))

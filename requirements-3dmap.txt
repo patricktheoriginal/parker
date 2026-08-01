@@ -1,0 +1,12 @@
+# 3D route map (embedded in Parker) dependencies.
+# Install with:  pip install -r requirements-3dmap.txt
+#
+# Without this, the 3D route map still works but opens in your default web
+# browser instead of inside the Parker window.
+#
+# For live-traffic routes and per-route traffic analysis, add a Google Maps
+# Directions API key to config/api_keys.json:
+#     "google_maps_key": "YOUR_KEY"
+# Without a key, routes come from OSRM (free, no live traffic).
+
+PyQt6-WebEngine

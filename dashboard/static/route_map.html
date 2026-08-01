@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Parker Route</title>
+<link href="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css" rel="stylesheet" />
+<script src="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
+<style>
+  html, body { margin:0; height:100%; background:#0a0600; font-family:"Courier New",monospace; }
+  #map { position:absolute; top:0; bottom:0; left:0; right:0; }
+  #panel {
+    position:absolute; top:10px; left:10px; z-index:5; max-width:300px;
+    background:rgba(20,13,2,0.92); border:1px solid #7a5a1a; border-radius:8px;
+    color:#ffe4a0; padding:10px 12px; font-size:12px; line-height:1.5;
+  }
+  #panel h3 { margin:0 0 6px; color:#ffb300; font-size:13px; }
+  .route { padding:5px 6px; border-radius:5px; cursor:pointer; margin-bottom:4px;
+           border:1px solid transparent; }
+  .route:hover { border-color:#7a5a1a; }
+  .route.sel { background:rgba(255,179,0,0.16); border-color:#ffb300; }
+  .r-name { color:#ffd54a; font-weight:bold; }
+  .r-an { color:#cca24a; font-size:11px; }
+  #hint { position:absolute; bottom:8px; left:10px; z-index:5; color:#8a6d3a; font-size:11px; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="panel"><h3>ROUTE</h3><div id="routes"></div></div>
+<div id="hint">Drag to rotate · Ctrl+drag to tilt (3D) · scroll to zoom</div>
+<script>
+// ROUTE_DATA is injected by Parker (or falls back to a demo).
+const ROUTE_DATA = window.ROUTE_DATA || {
+  o_label:"Origin", d_label:"Destination", selected:0,
+  routes:[{dist_km:0, eta_text:"", analysis:"", summary:"", points:[[21.02,105.84],[20.26,105.98]]}]
+};
+
+const COLORS = ["#ffb300", "#00d4ff", "#00ff88", "#ff6b00"];
+
+const map = new maplibregl.Map({
+  container: "map",
+  style: "https://demotiles.maplibre.org/style.json",
+  center: ROUTE_DATA.routes[0].points[0].slice().reverse(),
+  zoom: 8, pitch: 60, bearing: -20, antialias: true
+});
+map.addControl(new maplibregl.NavigationControl({visualizePitch:true}));
+
+function bounds(points){
+  const b = new maplibregl.LngLatBounds();
+  points.forEach(p => b.extend([p[1], p[0]]));
+  return b;
+}
+
+function drawRoutes(){
+  ROUTE_DATA.routes.forEach((r, i) => {
+    const id = "route"+i;
+    const geo = { type:"Feature", geometry:{ type:"LineString",
+      coordinates: r.points.map(p => [p[1], p[0]]) } };
+    if (map.getSource(id)) { map.getSource(id).setData(geo); return; }
+    map.addSource(id, { type:"geojson", data:geo });
+    map.addLayer({ id:id, type:"line", source:id,
+      layout:{ "line-join":"round", "line-cap":"round" },
+      paint:{ "line-color": COLORS[i % COLORS.length],
+              "line-width": i === ROUTE_DATA.selected ? 7 : 4,
+              "line-opacity": i === ROUTE_DATA.selected ? 1 : 0.55 } });
+  });
+  // Endpoint markers
+  const first = ROUTE_DATA.routes[ROUTE_DATA.selected].points;
+  new maplibregl.Marker({color:"#00ff88"}).setLngLat(first[0].slice().reverse())
+     .setPopup(new maplibregl.Popup().setText(ROUTE_DATA.o_label)).addTo(map);
+  new maplibregl.Marker({color:"#ff3355"}).setLngLat(first[first.length-1].slice().reverse())
+     .setPopup(new maplibregl.Popup().setText(ROUTE_DATA.d_label)).addTo(map);
+  map.fitBounds(bounds(first), { padding:60, pitch:60, duration:800 });
+}
+
+function restyle(){
+  ROUTE_DATA.routes.forEach((r,i) => {
+    if (!map.getLayer("route"+i)) return;
+    map.setPaintProperty("route"+i, "line-width", i===ROUTE_DATA.selected?7:4);
+    map.setPaintProperty("route"+i, "line-opacity", i===ROUTE_DATA.selected?1:0.55);
+  });
+}
+
+function selectRoute(i){
+  ROUTE_DATA.selected = i;
+  restyle(); renderPanel();
+  const p = ROUTE_DATA.routes[i].points;
+  map.fitBounds(bounds(p), { padding:60, pitch:60, duration:600 });
+}
+window.selectRoute = selectRoute;   // callable from Parker
+
+function renderPanel(){
+  const el = document.getElementById("routes");
+  el.innerHTML = "";
+  ROUTE_DATA.routes.forEach((r,i) => {
+    const d = document.createElement("div");
+    d.className = "route" + (i===ROUTE_DATA.selected ? " sel" : "");
+    const name = r.summary ? (" via "+r.summary) : "";
+    d.innerHTML = `<div class="r-name">Route ${i+1}${name}</div>` +
+      `<div>${r.dist_km.toFixed(0)} km · ${r.eta_text}</div>` +
+      `<div class="r-an">${r.analysis}</div>`;
+    d.onclick = () => selectRoute(i);
+    el.appendChild(d);
+  });
+  document.querySelector("#panel h3").textContent =
+    `${ROUTE_DATA.o_label} → ${ROUTE_DATA.d_label}`;
+}
+
+map.on("load", () => { drawRoutes(); renderPanel(); });
+</script>
+</body>
+</html>

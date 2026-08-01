@@ -230,9 +230,32 @@ def _open_maps_by_text(origin: str, dest: str, o, d, player) -> str:
     return msg
 
 
+def different_route(parameters: dict = None, player=None, session_memory=None) -> str:
+    """Cycle to the next alternative of the last computed route and re-show the
+    3D map with per-route analysis."""
+    from actions.route_engine import get_last, select_next, render_map, describe
+    last = get_last()
+    if not last["routes"]:
+        return "Sir, ask me for a route first, then I can show alternatives."
+    if len(last["routes"]) <= 1:
+        return "That was the only route I could find for this trip, sir."
+    idx = select_next()
+    render_map(player)
+    r = last["routes"][idx]
+    _log(f"Switched to route {idx+1}: {r['dist_km']:.0f} km, {r['eta_text']} — {r['analysis']}.", player)
+    return (f"Showing route {idx+1} of {len(last['routes'])}: "
+            f"{r['dist_km']:.0f} km, {r['eta_text']}, {r['analysis']}.\n"
+            + describe(last["routes"], idx))
+
+
 def route_directions(parameters: dict, player=None, session_memory=None) -> str:
-    """Plan a Vietnam driving route with timing and along-the-route weather,
-    then open it on Google Maps."""
+    """Plan a Vietnam driving route: compute alternative routes with analysis,
+    show a 3D map, and give timing + along-route weather."""
+    # "different route" / "another way" → cycle the last result.
+    _action = (parameters.get("action") or "").strip().lower()
+    if _action in ("different", "different_route", "alternative", "another", "next"):
+        return different_route(parameters, player, session_memory)
+
     dest = (parameters.get("destination") or parameters.get("to") or "").strip()
     origin = (parameters.get("origin") or parameters.get("from") or "").strip()
     depart = (parameters.get("depart_time") or parameters.get("time") or "").strip()
@@ -292,9 +315,19 @@ def route_directions(parameters: dict, player=None, session_memory=None) -> str:
     for lon, lat in _sample_points(coords, n=3):
         along.append(_weather_summary(lat, lon))
 
-    # Open Google Maps driving directions (user can tilt into 3D inside Maps).
-    # Use exact coordinates so Maps doesn't re-resolve an ambiguous name, but
-    # keep the readable place name as a label via the *_place hints.
+    # ── Alternative routes + 3D map ──────────────────────────────────────────
+    routes_summary = ""
+    try:
+        from actions.route_engine import compute_routes, render_map, describe
+        depart_epoch = int(depart_dt.timestamp()) if depart_dt else None
+        alts = compute_routes((o_lat, o_lon), (d_lat, d_lon),
+                              o_label, d_label, depart_epoch)
+        if alts:
+            render_map(player)               # show the 3D route map in Parker
+            routes_summary = describe(alts, 0)
+    except Exception as e:
+        print(f"[Route] alternatives/map failed: {e}")
+
     gmaps = ("https://www.google.com/maps/dir/?api=1"
              f"&origin={o_lat},{o_lon}"
              f"&destination={d_lat},{d_lon}"
@@ -313,12 +346,14 @@ def route_directions(parameters: dict, player=None, session_memory=None) -> str:
     ]
     if along:
         parts.append("Weather along the way: " + "; ".join(along) + ".")
-    if opened:
-        parts.append("I've opened the route on Google Maps.")
-    else:
-        parts.append(f"Open it here: {gmaps}")
+    parts.append("I've opened the 3D route map.")
+    if routes_summary and "route(s)" in routes_summary:
+        # Mention alternatives count and that the user can ask for a different one.
+        parts.append("Say 'different route' to see alternatives.")
 
     msg = " ".join(parts)
+    if routes_summary:
+        msg = msg + "\n" + routes_summary
     _log(msg, player)
 
     # Show it on the content panel too, if available

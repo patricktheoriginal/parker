@@ -1783,6 +1783,7 @@ class MainWindow(QMainWindow):
     _cam_stream_sig = pyqtSignal(bool)       # True=start live stream, False=stop
     _cam_frame_sig  = pyqtSignal(bytes)      # live camera frame → HUD area
     _clipboard_sig  = pyqtSignal(str)        # clipboard text changed (thread-safe)
+    _routemap_sig   = pyqtSignal(str)        # path to a route map HTML → show it
 
     def __init__(self, face_path: str):
         super().__init__()
@@ -1924,6 +1925,8 @@ class MainWindow(QMainWindow):
         self._cam_stream_sig.connect(self._on_cam_stream)
         self._cam_frame_sig.connect(self._on_cam_frame)
         self._clipboard_sig.connect(self._show_clipboard_panel)
+        self._routemap_sig.connect(self._show_route_map)
+        self._route_win = None            # embedded route-map window (if WebEngine)
         self._cam_stop = threading.Event()
 
         # Camera preview overlay (child of central widget, positioned in resizeEvent)
@@ -2898,6 +2901,25 @@ class MainWindow(QMainWindow):
 
         return w
 
+    def _show_route_map(self, html_path: str):
+        """Slot — show a 3D route map. Uses an embedded WebEngine window if
+        available, otherwise opens the HTML in the default browser."""
+        try:
+            from PyQt6.QtWebEngineWidgets import QWebEngineView  # noqa: F401
+            from PyQt6.QtWebEngineWidgets import QWebEngineView as _WEV
+            from PyQt6.QtCore import QUrl as _QUrl
+            if self._route_win is None:
+                self._route_win = _WEV()
+                self._route_win.setWindowTitle("Parker — 3D Route")
+                self._route_win.resize(900, 640)
+            self._route_win.load(_QUrl.fromLocalFile(html_path))
+            self._route_win.show()
+            self._route_win.raise_()
+        except Exception:
+            # WebEngine not installed → open in the external browser.
+            import webbrowser
+            webbrowser.open(f"file://{html_path}")
+
     def _show_content(self, title: str, text: str):
         """Slot — runs on Qt main thread. Updates and shows the content panel."""
         import time as _time
@@ -3357,6 +3379,10 @@ class ParkerUI:
     def show_content(self, title: str, text: str):
         """Thread-safe: display content in the panel below the HUD."""
         self._win._content_sig.emit(title[:48], text[:4000])
+
+    def show_route_map(self, html_path: str):
+        """Thread-safe: show a 3D route map (embedded WebEngine or browser)."""
+        self._win._routemap_sig.emit(html_path)
 
     def prompt_reconfig(self):
         """Thread-safe: show the API key setup overlay (e.g. after an auth error)."""
