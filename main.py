@@ -1128,7 +1128,22 @@ class ParkerLive:
 
         parts.append(sys_prompt)
 
-        return types.LiveConnectConfig(
+        # Voice-activity detection tuned to catch soft/short speech and not cut
+        # the user off. START_SENSITIVITY_HIGH triggers on quieter onsets;
+        # a longer end-of-speech padding avoids clipping trailing words.
+        try:
+            _vad = types.RealtimeInputConfig(
+                automatic_activity_detection=types.AutomaticActivityDetection(
+                    start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_HIGH,
+                    end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_LOW,
+                    prefix_padding_ms=200,
+                    silence_duration_ms=800,
+                )
+            )
+        except Exception:
+            _vad = None
+
+        _cfg_kwargs = dict(
             response_modalities=["AUDIO"],
             output_audio_transcription={},
             input_audio_transcription={},
@@ -1143,6 +1158,9 @@ class ParkerLive:
                 )
             ),
         )
+        if _vad is not None:
+            _cfg_kwargs["realtime_input_config"] = _vad
+        return types.LiveConnectConfig(**_cfg_kwargs)
 
     async def _execute_tool(self, fc) -> types.FunctionResponse:
         name = fc.name
@@ -1466,16 +1484,68 @@ class ParkerLive:
     async def _listen_audio(self):
         print("[PARKER] 🎤 Mic started")
         loop = asyncio.get_event_loop()
+        import numpy as _np
+
+        # Adaptive gain: quietly boost weak mics so Gemini hears clearly, with a
+        # hard clip-guard so we never distort. Gain adapts slowly toward a target
+        # peak; if a boosted block would clip, we back off instead of overdriving.
+        _target_peak = 0.5 * 32767.0   # aim for ~-6 dBFS peaks
+        _max_gain = 6.0                # never amplify more than 6× (weak mics)
+        _gain_state = {"g": 1.0}
 
         def callback(indata, frames, time_info, status):
             with self._speaking_lock:
                 assistant_speaking = self._is_speaking
-            if not assistant_speaking and not self.ui.muted and not self._phone_active:
-                data = indata.tobytes()
+            # Skip while reconnecting (voice/persona change) — the sender isn't
+            # draining the queue, so there's no point buffering mic audio.
+            if (not assistant_speaking and not self.ui.muted
+                    and not self._phone_active
+                    and not self._reconnecting and not self._pending_reconnect):
+                try:
+                    samples = indata.reshape(-1).astype(_np.float32)
+                    peak = float(_np.max(_np.abs(samples))) if samples.size else 0.0
+                    if peak > 500.0:  # only adapt on real speech, ignore silence/hum
+                        desired = _target_peak / peak
+                        desired = max(1.0, min(_max_gain, desired))
+                        # Smooth toward the desired gain so volume doesn't pump.
+                        _gain_state["g"] += 0.1 * (desired - _gain_state["g"])
+                    g = _gain_state["g"]
+                    if g > 1.01:
+                        boosted = samples * g
+                        # Clip-guard: if the peak would exceed full scale, scale
+                        # this block down just enough to stay clean.
+                        bpeak = float(_np.max(_np.abs(boosted)))
+                        if bpeak > 32767.0:
+                            boosted *= 32767.0 / bpeak
+                        data = boosted.astype(_np.int16).tobytes()
+                    else:
+                        data = indata.tobytes()
+                except Exception:
+                    data = indata.tobytes()  # never let audio math break the mic
                 loop.call_soon_threadsafe(
-                    self.out_queue.put_nowait,
+                    self._enqueue_audio,
                     {"data": data, "mime_type": "audio/pcm"}
                 )
+
+    def _enqueue_audio(self, msg):
+        """Push a mic frame onto out_queue without ever raising. If the queue is
+        full (sender stalled, e.g. during a voice/persona reconnect), drop the
+        OLDEST frame and enqueue the newest — realtime audio must not back up or
+        crash the event loop with QueueFull."""
+        q = self.out_queue
+        if q is None:
+            return
+        try:
+            q.put_nowait(msg)
+        except asyncio.QueueFull:
+            try:
+                q.get_nowait()      # discard stalest frame
+            except Exception:
+                pass
+            try:
+                q.put_nowait(msg)
+            except Exception:
+                pass
 
         try:
             with sd.InputStream(
