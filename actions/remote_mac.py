@@ -74,14 +74,25 @@ def remote_list(parameters: dict, player=None, session_memory=None) -> str:
     if d.get("error"):
         return f"Sir, I couldn't list that folder: {d['error']}"
     items = d.get("items", [])
+    where = d.get("path", path or "home")
     if not items:
-        return f"{d.get('path')} is empty."
-    lines = [f"Contents of {d.get('path')}:"]
-    for it in items[:40]:
-        tag = "📁" if it["dir"] else "📄"
-        size = "" if it["dir"] else f" ({it['size']:,} B)"
-        lines.append(f"  {tag} {it['name']}{size}")
-    return "\n".join(lines)
+        _log(player, f"SYS: {where} is empty.")
+        return f"{where} is empty."
+
+    # Folders first, then files — write each entry to the Activity Log.
+    folders = [it for it in items if it["dir"]]
+    files = [it for it in items if not it["dir"]]
+    _log(player, f"SYS: 📂 {where}  —  {len(folders)} folder(s), {len(files)} file(s)")
+    for it in folders:
+        _log(player, f"  📁 {it['name']}/")
+    for it in files:
+        _log(player, f"  📄 {it['name']}  ({_fmt_size(it['size'])})")
+
+    # Short summary back to the model (it doesn't need the whole dump).
+    names = [f"{it['name']}/" if it["dir"] else it["name"] for it in items[:12]]
+    more = f" and {len(items) - 12} more" if len(items) > 12 else ""
+    return (f"{where} has {len(folders)} folder(s) and {len(files)} file(s). "
+            f"Listed them in the activity log. Top items: " + ", ".join(names) + more + ".")
 
 
 def remote_find(parameters: dict, player=None, session_memory=None) -> str:
@@ -99,10 +110,23 @@ def remote_find(parameters: dict, player=None, session_memory=None) -> str:
     matches = d.get("matches", [])
     if not matches:
         return f"Sir, I found no files matching '{query}' on the remote machine."
-    lines = [f"Found {len(matches)} file(s) matching '{query}':"]
-    lines += [f"  - {m}" for m in matches[:20]]
-    lines.append("Say 'get <full path>' to fetch one.")
-    return "\n".join(lines)
+    # Write each match to the Activity Log.
+    _log(player, f"SYS: 🔎 {len(matches)} match(es) for '{query}':")
+    for m in matches[:40]:
+        _log(player, f"  📄 {m}")
+    top = matches[:8]
+    more = f" and {len(matches) - 8} more" if len(matches) > 8 else ""
+    return (f"Found {len(matches)} file(s) matching '{query}', listed in the "
+            f"activity log. Examples: " + ", ".join(top) + more +
+            ". Say 'get <path>' to fetch one.")
+
+
+def _fmt_size(n: int) -> str:
+    if n >= 1024 * 1024:
+        return f"{n / (1024*1024):.1f} MB"
+    if n >= 1024:
+        return f"{n / 1024:.0f} KB"
+    return f"{n} B"
 
 
 def _log(player, msg: str):
