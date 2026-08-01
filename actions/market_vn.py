@@ -71,7 +71,12 @@ def fuel_price(parameters: dict = None, player=None, session_memory=None) -> str
     text = re.sub(r"<[^>]+>", " ", html)
     text = re.sub(r"\s+", " ", text)
 
-    # Price tokens like 27.327 (VND, tens of thousands).
+    # Product names as listed in the widget, in order.
+    products = re.findall(
+        r"(Xăng\s*E10\s*RON\s*95-V|Xăng\s*E10\s*RON\s*95-III|"
+        r"Xăng\s*E5\s*RON\s*92-II|DO\s*0,001S-V|DO\s*0,05S-II|Dầu hỏa[^,\s]*)",
+        text)
+    # Price tokens like 27.327 (VND, tens of thousands) that follow the names.
     prices = re.findall(r"\b([12]\d\.\d{3})\b", text)
 
     # RON 95 in Vietnam is ~20,000–27,000 VND/l; pick the plausible fuel prices.

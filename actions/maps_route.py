@@ -15,6 +15,7 @@ No API keys required.
 """
 
 import json
+import math
 import re
 import time
 import webbrowser
@@ -409,10 +410,11 @@ def route_directions(parameters: dict, player=None, session_memory=None) -> str:
              f"&origin={quote_plus(_gmaps_place(origin, o_lat, o_lon))}"
              f"&destination={quote_plus(_gmaps_place(dest, d_lat, d_lon))}"
              "&travelmode=driving")
+    opened = False
     try:
-        webbrowser.open(gmaps)
+        opened = webbrowser.open(gmaps)
     except Exception:
-        pass
+        opened = False
 
     # Build a natural English summary for the voice reply
     parts = [

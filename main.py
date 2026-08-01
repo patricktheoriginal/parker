@@ -1820,6 +1820,7 @@ class ParkerLive:
             e = identity.get(k, {})
             return (e.get("value", "") if isinstance(e, dict) else str(e)).strip()
 
+        lang = _val("language")
         name = _val("name")
         time_str = datetime.now().strftime("%H:%M")
 
@@ -2014,6 +2015,9 @@ class ParkerLive:
                 if not speaking and not recent_speech:
                     try:
                         alerts = await asyncio.to_thread(monitor_check_all)
+                        memory = load_memory()
+                        lang_e = memory.get("identity", {}).get("language", {})
+                        lang   = (lang_e.get("value", "") if isinstance(lang_e, dict) else str(lang_e)).strip() or "English"
                         for alert in alerts:
                             msg = (
                                 f"{alert}\n\n"

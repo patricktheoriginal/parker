@@ -32,6 +32,7 @@ import platform
 import secrets
 import socket
 import subprocess
+import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 

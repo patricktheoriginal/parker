@@ -6,7 +6,7 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from config import is_windows, is_mac
+from config import is_windows, is_mac, is_linux
 
 def _get_base_dir() -> Path:
     if getattr(sys, "frozen", False):
