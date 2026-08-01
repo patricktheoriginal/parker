@@ -265,6 +265,169 @@ def _play_via_ui(query: str) -> str:
         return f"Sir, I couldn't control Spotify: {e}"
 
 
+# Remembers the last listed playlists so "play the second one" works after
+# "list my playlists". Each entry: {"name","uri","id"}.
+_LAST_PLAYLISTS: list[dict] = []
+
+# Spoken ordinals → 1-based index, for "play the first/second one".
+_ORDINALS = {
+    "first": 1, "1st": 1, "one": 1,
+    "second": 2, "2nd": 2, "two": 2,
+    "third": 3, "3rd": 3, "three": 3,
+    "fourth": 4, "4th": 4, "four": 4,
+    "fifth": 5, "5th": 5, "five": 5,
+    "sixth": 6, "6th": 6, "six": 6,
+    "seventh": 7, "7th": 7, "seven": 7,
+    "eighth": 8, "8th": 8, "eight": 8,
+    "ninth": 9, "9th": 9, "nine": 9,
+    "tenth": 10, "10th": 10, "ten": 10,
+    "last": -1,
+}
+
+
+def _fetch_playlists(token) -> list[dict]:
+    """Return the user's playlists as [{name, uri, id}] in Spotify's own order —
+    the same order shown under 'All' when the app opens."""
+    out = []
+    try:
+        url = f"{_API}/me/playlists?limit=50"
+        for _ in range(4):                # up to 200 playlists
+            res = _http(url, headers=_api_headers(token))
+            for it in res.get("items", []):
+                if it and it.get("uri"):
+                    out.append({"name": it.get("name", "Untitled"),
+                                "uri": it["uri"], "id": it.get("id", "")})
+            url = res.get("next")
+            if not url:
+                break
+    except Exception as e:
+        print(f"[Spotify] fetch playlists failed: {e}")
+    return out
+
+
+def list_playlists(parameters: dict = None, player=None, session_memory=None) -> str:
+    """List the user's Spotify playlists (as shown under 'All'), numbered, and
+    write each to the Activity Log. Remembers the order so the user can then say
+    'play the first one' or 'play <name>'."""
+    global _LAST_PLAYLISTS
+    token = _access_token()
+    if not token:
+        return ("Sir, listing playlists needs the Spotify Web API configured "
+                "(client id/secret/refresh token in config/api_keys.json).")
+    pls = _fetch_playlists(token)
+    if not pls:
+        return "Sir, I found no playlists on your Spotify account."
+    _LAST_PLAYLISTS = pls
+
+    _log(player, f"SYS: 🎵 {len(pls)} Spotify playlist(s):")
+    for i, pl in enumerate(pls, 1):
+        _log(player, f"  {i}. {pl['name']}")
+
+    # Read the first ~10 names back so Parker can speak them.
+    top = pls[:10]
+    spoken = "; ".join(f"{i}. {pl['name']}" for i, pl in enumerate(top, 1))
+    more = f" …and {len(pls) - 10} more" if len(pls) > 10 else ""
+    return (f"You have {len(pls)} playlists. Here they are: {spoken}{more}. "
+            f"Say 'play the first one', 'play number 3', or the playlist name.")
+
+
+def _resolve_playlist(selector: str) -> dict | None:
+    """Map a selector ('second', '3', or a name) to a remembered playlist."""
+    sel = (selector or "").strip().lower()
+    if not sel or not _LAST_PLAYLISTS:
+        return None
+    # Ordinal word or plain number.
+    idx = None
+    sel_clean = sel.replace("the ", "").replace("number ", "").replace("#", "").strip()
+    if sel_clean in _ORDINALS:
+        idx = _ORDINALS[sel_clean]
+    elif sel_clean.isdigit():
+        idx = int(sel_clean)
+    if idx is not None:
+        if idx == -1:
+            return _LAST_PLAYLISTS[-1]
+        if 1 <= idx <= len(_LAST_PLAYLISTS):
+            return _LAST_PLAYLISTS[idx - 1]
+        return None
+    # Otherwise match by name (exact, then substring).
+    for pl in _LAST_PLAYLISTS:
+        if pl["name"].lower() == sel:
+            return pl
+    for pl in _LAST_PLAYLISTS:
+        if sel in pl["name"].lower():
+            return pl
+    return None
+
+
+def _play_context(token, context_uri: str) -> str:
+    """Start playback of a playlist/album context on the active device."""
+    device = _active_device(token)
+    if not device:
+        try:
+            from actions.open_app import open_app
+            open_app(parameters={"app_name": "Spotify"})
+            time.sleep(3)
+            device = _active_device(token)
+        except Exception:
+            pass
+    if not device:
+        return ("Sir, no active Spotify device. Open Spotify on this PC or your "
+                "phone, then ask again.")
+    try:
+        body = json.dumps({"context_uri": context_uri}).encode()
+        _http(f"{_API}/me/player/play?device_id={device}",
+              data=body, method="PUT", headers=_api_headers(token))
+        return ""                          # empty = success (caller adds name)
+    except urllib.error.HTTPError as e:
+        if e.code == 403:
+            return "Sir, Spotify playback control needs a Premium account."
+        return f"Sir, I couldn't start playback: {e}"
+    except Exception as e:
+        return f"Sir, I couldn't start playback: {e}"
+
+
+def play_playlist(parameters: dict = None, player=None, session_memory=None) -> str:
+    """Play a playlist chosen by name or by position ('the second one'). Lists
+    playlists first if none have been listed yet this session."""
+    global _LAST_PLAYLISTS
+    p = parameters or {}
+    selector = (p.get("selector") or p.get("name") or p.get("query")
+                or p.get("index") or "").strip()
+    if not selector:
+        return "Sir, which playlist? Say a name, or 'the first one'."
+
+    token = _access_token()
+    if not token:
+        return ("Sir, playing a playlist by name needs the Spotify Web API "
+                "configured in config/api_keys.json.")
+
+    # Populate the list on demand so 'play the second one' works even before an
+    # explicit 'list playlists'.
+    if not _LAST_PLAYLISTS:
+        _LAST_PLAYLISTS = _fetch_playlists(token)
+    if not _LAST_PLAYLISTS:
+        return "Sir, I found no playlists on your Spotify account."
+
+    pl = _resolve_playlist(selector)
+    if not pl:
+        return (f"Sir, I couldn't find a playlist matching '{selector}'. "
+                f"Ask me to list your playlists first.")
+
+    err = _play_context(token, pl["uri"])
+    msg = err if err else f"Playing your playlist '{pl['name']}' on Spotify."
+    print(f"[Spotify] {msg}")
+    _log(player, f"[spotify] {msg}")
+    return msg
+
+
+def _log(player, msg: str):
+    if player:
+        try:
+            player.write_log(msg)
+        except Exception:
+            pass
+
+
 def play_spotify(parameters: dict, player=None, session_memory=None) -> str:
     """Play a song/artist/playlist on Spotify by name."""
     p = parameters or {}

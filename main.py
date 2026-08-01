@@ -47,7 +47,7 @@ from actions.utilities          import (
 from actions.market_vn          import gold_price, fuel_price
 from actions.vn_news            import vietnam_news
 from actions.home_assistant     import home_control, home_list
-from actions.spotify            import play_spotify, play_favorites
+from actions.spotify            import play_spotify, play_favorites, list_playlists, play_playlist
 from actions.remote_mac         import (
     remote_status, remote_list, remote_find, remote_get, remote_exec,
 )
@@ -319,6 +319,31 @@ TOOL_DECLARATIONS = [
             "'play my saved songs'. Takes no arguments."
         ),
         "parameters": {"type": "OBJECT", "properties": {}},
+    },
+    {
+        "name": "list_playlists",
+        "description": (
+            "Lists the user's Spotify playlists (the ones shown under 'All' when "
+            "the app opens), numbered, and reads their names back. Use when the "
+            "user asks 'what are my playlists', 'list my playlists', 'show my "
+            "playlists', 'read my playlists'. After this, the user can say 'play "
+            "the first one' or a playlist name to start it. Takes no arguments. "
+            "Read the numbered names aloud to the user."
+        ),
+        "parameters": {"type": "OBJECT", "properties": {}},
+    },
+    {
+        "name": "play_playlist",
+        "description": (
+            "Plays one of the user's Spotify playlists, chosen either by NAME or "
+            "by POSITION in the list just read out. Use when the user says 'play "
+            "the first one', 'play the second one', 'play number 3', 'play the "
+            "last one', or 'play my <playlist name> playlist'. Pass what they said "
+            "as 'selector' (e.g. 'second', '3', or the playlist name)."
+        ),
+        "parameters": {"type": "OBJECT", "properties": {
+            "selector": {"type": "STRING", "description": "Playlist name, or ordinal/position like 'first', 'second', '3', 'last'."}
+        }, "required": ["selector"]},
     },
     {
         "name": "microphone_control",
@@ -1253,6 +1278,12 @@ class ParkerLive:
 
             elif name == "play_favorites":
                 result = await loop.run_in_executor(None, lambda: play_favorites(parameters=args, player=self.ui))
+
+            elif name == "list_playlists":
+                result = await loop.run_in_executor(None, lambda: list_playlists(parameters=args, player=self.ui))
+
+            elif name == "play_playlist":
+                result = await loop.run_in_executor(None, lambda: play_playlist(parameters=args, player=self.ui))
 
             elif name == "remote_status":
                 result = await loop.run_in_executor(None, lambda: remote_status(parameters=args, player=self.ui))
