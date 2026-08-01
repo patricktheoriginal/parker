@@ -51,14 +51,23 @@ class _TTS:
             return self._piper
         try:
             from piper import PiperVoice
-            onnx = _PIPER_DIR / f"{_PIPER_VOICE}.onnx"
-            if not onnx.exists():
-                self._piper = False
-                return False
+        except Exception:
+            print("[OfflineVoice] piper-tts not installed → using the robotic OS "
+                  "voice. Install it:  pip install piper-tts")
+            self._piper = False
+            return False
+        onnx = _PIPER_DIR / f"{_PIPER_VOICE}.onnx"
+        if not onnx.exists():
+            print(f"[OfflineVoice] Piper voice not downloaded at {onnx} → using OS "
+                  f"voice. Run:  python tools/setup_offline.py")
+            self._piper = False
+            return False
+        try:
             self._piper = PiperVoice.load(str(onnx))
+            print(f"[OfflineVoice] Using Piper neural voice: {_PIPER_VOICE}")
             return self._piper
         except Exception as e:
-            print(f"[OfflineVoice] Piper unavailable ({e}); using OS voice.")
+            print(f"[OfflineVoice] Piper failed to load ({e}); using OS voice.")
             self._piper = False
             return False
 
