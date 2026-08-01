@@ -9,7 +9,9 @@
 # First run downloads the jar + Vietnam map and builds the routing graph
 # (a few minutes, needs ~2-4 GB RAM). Server listens on http://localhost:8989.
 
-$ErrorActionPreference = "Stop"
+# Continue on native-command stderr (java -version writes there); we handle
+# download failures explicitly.
+$ErrorActionPreference = "Continue"
 $dir = "$env:USERPROFILE\.parker_graphhopper"
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
 Set-Location $dir
@@ -54,7 +56,6 @@ if (-not $JAVA) {
   exit 1
 }
 Write-Host "Java: $JAVA"
-& $JAVA -version 2>&1 | Select-Object -First 1 | ForEach-Object { Write-Host "  $_" }
 
 if (-not (Test-Path $jar))  { Write-Host "Downloading GraphHopper…"; `
   Invoke-WebRequest "https://repo1.maven.org/maven2/com/graphhopper/graphhopper-web/11.0/graphhopper-web-11.0.jar" -OutFile $jar }
