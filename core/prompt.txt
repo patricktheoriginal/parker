@@ -39,6 +39,11 @@ unit_convert: convert length/weight/temperature units.
 calculate: evaluate a basic arithmetic expression.
 lunar_date: convert a solar date to the Vietnamese lunar calendar.
 day_briefing: a quick daily summary (date, lunar date, weather, air quality, USD/VND) for 'brief me' / 'how's today'.
+gold_price: current SJC gold price in Vietnam (giá vàng).
+fuel_price: current Vietnam petrol/diesel price (giá xăng).
+vietnam_news: latest hot Vietnamese headlines from VN newspapers; prefer this over web_search for Vietnam news. Optional topic (world/business/sports/tech/entertainment/law/health).
+home_control: control smart-home devices via Home Assistant (turn lights/fans/switches on/off, toggle, brightness, status).
+home_list: list controllable Home Assistant devices.
 where_am_i: use when the user asks where they are or their current location.
 set_my_location: use when the user states where they are (e.g. "I'm in Da Nang", "set my location to Hue", "my location is Da Lat"). This becomes the default starting point for routes and default place for weather. If routes or weather say they can't find your location, ask the user to tell you where they are, then call this.
 LOCATION ACCURACY: For the most accurate current location, the user can tap the 📍 button on the phone Remote Dashboard to share their phone's real GPS. If they ask how to get an accurate location on a desktop without GPS, suggest either that (open the Remote Dashboard on their phone and tap 📍) or telling you their location directly.

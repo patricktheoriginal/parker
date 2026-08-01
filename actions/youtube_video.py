@@ -136,31 +136,49 @@ def _ask_for_url(prompt_text: str = "YouTube video URL:") -> str | None:
 def _get_transcript(video_id: str) -> str | None:
     if not _TRANSCRIPT_OK:
         return None
+
+    lang_priority = ["vi", "en", "tr", "de", "fr", "es", "it", "pt", "ru", "ja", "ko", "ar", "zh"]
+
+    def _text_from(fetched) -> str:
+        out = []
+        for e in fetched:
+            # New API returns objects with .text; older returns dicts.
+            out.append(getattr(e, "text", None) or (e.get("text") if isinstance(e, dict) else ""))
+        return " ".join(t for t in out if t)
+
+    # New API (youtube-transcript-api >= 1.0): instance .fetch()/.list()
     try:
-        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-        transcript      = None
-
-        lang_priority = ["en", "tr", "de", "fr", "es", "it", "pt", "ru", "ja", "ko", "ar", "zh"]
-
+        api = YouTubeTranscriptApi()
         try:
-            transcript = transcript_list.find_manually_created_transcript(lang_priority)
+            fetched = api.fetch(video_id, languages=lang_priority)
+            return _text_from(fetched)
         except Exception:
-            pass
-
-        if transcript is None:
-            try:
-                transcript = transcript_list.find_generated_transcript(lang_priority)
-            except Exception:
-                for t in transcript_list:
-                    transcript = t
-                    break
-
-        if transcript is None:
+            # Fall back to whatever transcript is available for this video.
+            transcripts = api.list(video_id)
+            for tr in transcripts:
+                try:
+                    return _text_from(tr.fetch())
+                except Exception:
+                    continue
             return None
-
-        fetched = transcript.fetch()
-        return " ".join(entry["text"] for entry in fetched)
-
+    except AttributeError:
+        # Old API (< 1.0): classmethods list_transcripts / find_*_transcript
+        try:
+            tl = YouTubeTranscriptApi.list_transcripts(video_id)
+            tr = None
+            try:
+                tr = tl.find_manually_created_transcript(lang_priority)
+            except Exception:
+                try:
+                    tr = tl.find_generated_transcript(lang_priority)
+                except Exception:
+                    for t in tl:
+                        tr = t
+                        break
+            return _text_from(tr.fetch()) if tr else None
+        except Exception as e:
+            print(f"[YouTube] ⚠️ Transcript fetch failed (old API): {e}")
+            return None
     except Exception as e:
         print(f"[YouTube] ⚠️ Transcript fetch failed: {e}")
         return None

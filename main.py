@@ -44,6 +44,9 @@ from actions.utilities          import (
     currency_convert, air_quality, wiki_lookup, crypto_price,
     unit_convert, calculate, lunar_date, day_briefing,
 )
+from actions.market_vn          import gold_price, fuel_price
+from actions.vn_news            import vietnam_news
+from actions.home_assistant     import home_control, home_list
 from actions.send_message      import send_message
 from actions.make_call         import make_call
 from actions.reminder          import reminder
@@ -258,6 +261,37 @@ TOOL_DECLARATIONS = [
     {
         "name": "day_briefing",
         "description": "A quick personal day summary combining date, lunar date, weather, air quality, and USD/VND for the user's location. Use for 'brief me', 'how's today', 'daily summary'.",
+        "parameters": {"type": "OBJECT", "properties": {}},
+    },
+    {
+        "name": "gold_price",
+        "description": "Current SJC gold prices in Vietnam (buy/sell). Use when the user asks about gold price / giá vàng.",
+        "parameters": {"type": "OBJECT", "properties": {}},
+    },
+    {
+        "name": "fuel_price",
+        "description": "Current Vietnam petrol/diesel prices (Petrolimex). Use for fuel/gas price / giá xăng dầu.",
+        "parameters": {"type": "OBJECT", "properties": {}},
+    },
+    {
+        "name": "vietnam_news",
+        "description": "Latest hot Vietnamese headlines from VnExpress/Tuoi Tre/Thanh Nien, optionally by topic. Use when the user asks for Vietnam news or hot news.",
+        "parameters": {"type": "OBJECT", "properties": {
+            "topic": {"type": "STRING", "description": "Optional: latest (default), world, business, sports, tech, entertainment, law, health."}
+        }, "required": []},
+    },
+    {
+        "name": "home_control",
+        "description": "Controls a smart-home device via Home Assistant — turn lights/switches/fans on or off, toggle, set brightness, or read status. Use when the user asks to turn on/off a device or light.",
+        "parameters": {"type": "OBJECT", "properties": {
+            "device":     {"type": "STRING", "description": "Device or area name, e.g. 'living room light', 'bedroom fan'."},
+            "action":     {"type": "STRING", "description": "on | off | toggle | status."},
+            "brightness": {"type": "INTEGER", "description": "Optional brightness 0-100 (lights)."}
+        }, "required": ["device", "action"]},
+    },
+    {
+        "name": "home_list",
+        "description": "Lists the controllable smart-home devices in Home Assistant.",
         "parameters": {"type": "OBJECT", "properties": {}},
     },
     {
@@ -1066,6 +1100,21 @@ class ParkerLive:
 
             elif name == "day_briefing":
                 result = await loop.run_in_executor(None, lambda: day_briefing(parameters=args, player=self.ui))
+
+            elif name == "gold_price":
+                result = await loop.run_in_executor(None, lambda: gold_price(parameters=args, player=self.ui))
+
+            elif name == "fuel_price":
+                result = await loop.run_in_executor(None, lambda: fuel_price(parameters=args, player=self.ui))
+
+            elif name == "vietnam_news":
+                result = await loop.run_in_executor(None, lambda: vietnam_news(parameters=args, player=self.ui))
+
+            elif name == "home_control":
+                result = await loop.run_in_executor(None, lambda: home_control(parameters=args, player=self.ui))
+
+            elif name == "home_list":
+                result = await loop.run_in_executor(None, lambda: home_list(parameters=args, player=self.ui))
 
             elif name == "where_am_i":
                 r = await loop.run_in_executor(None, lambda: where_am_i(parameters=args, player=self.ui))
