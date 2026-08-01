@@ -47,6 +47,7 @@ from actions.utilities          import (
 from actions.market_vn          import gold_price, fuel_price
 from actions.vn_news            import vietnam_news
 from actions.home_assistant     import home_control, home_list
+from actions.spotify            import play_spotify
 from actions.send_message      import send_message
 from actions.make_call         import make_call
 from actions.reminder          import reminder
@@ -293,6 +294,18 @@ TOOL_DECLARATIONS = [
         "name": "home_list",
         "description": "Lists the controllable smart-home devices in Home Assistant.",
         "parameters": {"type": "OBJECT", "properties": {}},
+    },
+    {
+        "name": "play_spotify",
+        "description": (
+            "Plays a specific song, artist, or playlist on Spotify by searching "
+            "for it and starting playback. Use when the user asks to play a named "
+            "song/artist (e.g. 'play Shape of You', 'play Sơn Tùng on Spotify'). "
+            "For plain pause/resume/next, use computer_settings music controls instead."
+        ),
+        "parameters": {"type": "OBJECT", "properties": {
+            "query": {"type": "STRING", "description": "Song, artist, or playlist to play, e.g. 'Blinding Lights The Weeknd'."}
+        }, "required": ["query"]},
     },
     {
         "name": "where_am_i",
@@ -1115,6 +1128,9 @@ class ParkerLive:
 
             elif name == "home_list":
                 result = await loop.run_in_executor(None, lambda: home_list(parameters=args, player=self.ui))
+
+            elif name == "play_spotify":
+                result = await loop.run_in_executor(None, lambda: play_spotify(parameters=args, player=self.ui))
 
             elif name == "where_am_i":
                 r = await loop.run_in_executor(None, lambda: where_am_i(parameters=args, player=self.ui))
