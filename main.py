@@ -877,6 +877,7 @@ class ParkerLive:
         self._asst_name     = "Parker"   # updated each session from config
         self._offline_history: list = []   # conversation memory for offline mode
         self._pending_reconnect = False    # reconnect to apply a new voice/persona
+        self._reconnecting = False         # True during an intentional reconnect
         self._offline_voice = None         # OfflineVoice loop, active only offline
         self._announced_offline = False    # spoke the "offline mode" notice once
         self._was_online = False           # True once a cloud session has connected
@@ -1405,7 +1406,14 @@ class ParkerLive:
     async def _send_realtime(self):
         while True:
             msg = await self.out_queue.get()
-            await self.session.send_realtime_input(media=msg)
+            try:
+                await self.session.send_realtime_input(media=msg)
+            except Exception:
+                # Session closed (e.g. an intentional reconnect for a voice/persona
+                # change). Exit quietly instead of crashing the TaskGroup.
+                if self._pending_reconnect or self._reconnecting:
+                    return
+                raise
 
     async def _listen_audio(self):
         print("[PARKER] 🎤 Mic started")
@@ -1480,6 +1488,7 @@ class ParkerLive:
                             # takes effect.
                             if self._pending_reconnect:
                                 self._pending_reconnect = False
+                                self._reconnecting = True
                                 self._conn_backoff = 1
                                 self.ui.write_log("SYS: Applying new voice/persona…")
                                 try:
@@ -2029,11 +2038,21 @@ class ParkerLive:
                 # exception escape the while-loop and causing asyncio.run() to
                 # start shutdown — resulting in "executor after shutdown" errors).
                 err_str = str(e)
-                print(f"[PARKER] Error ({type(e).__name__}): {e}")
-                traceback.print_exc()
+
+                # Intentional reconnect (voice/persona change) closes the socket
+                # cleanly — don't print a scary traceback for that; just reconnect
+                # quickly (the `finally` below clears the session).
+                _was_reconnect = self._reconnecting
+                if _was_reconnect:
+                    self._reconnecting = False
+                    self._conn_backoff = 1
+                    print("[PARKER] Applying new voice/persona — reconnecting…")
+                else:
+                    print(f"[PARKER] Error ({type(e).__name__}): {e}")
+                    traceback.print_exc()
 
                 # Invalid API key — stop hammering the API, prompt re-configuration
-                if "API key not valid" in err_str or "1007" in err_str:
+                if not _was_reconnect and ("API key not valid" in err_str or "1007" in err_str):
                     self.ui.write_log("ERR: API key invalid — please re-enter your key.")
                     self.ui.set_state("SLEEPING")
                     self.ui.prompt_reconfig()
@@ -2046,12 +2065,12 @@ class ParkerLive:
                 # Network / timeout errors — log clearly and back off. Also treat
                 # it as a network error if an active connectivity check fails (the
                 # watchdog may have closed the session cleanly on a drop).
-                is_net_err = any(k in err_str for k in (
+                is_net_err = (not _was_reconnect) and any(k in err_str for k in (
                     "TimeoutError", "timed out", "getaddrinfo", "CancelledError",
                     "ConnectionRefusedError", "OSError", "Cannot connect",
                     "ConnectionClosed", "connection closed",
                 ))
-                if not is_net_err and not await asyncio.to_thread(_has_internet):
+                if not _was_reconnect and not is_net_err and not await asyncio.to_thread(_has_internet):
                     is_net_err = True
                 if is_net_err:
                     _conn_backoff = min(getattr(self, "_conn_backoff", 3) * 2, 60)
