@@ -92,6 +92,21 @@ def _load_system_prompt() -> str:
             "Never simulate or guess results — always call the appropriate tool."
         )
 
+def _has_internet(timeout: float = 2.0) -> bool:
+    """Fast active connectivity check — TCP-connect to a couple of well-known
+    hosts. Returns True if any succeeds. Used to detect offline quickly instead
+    of waiting for a Gemini request to time out."""
+    import socket
+    for host, port in (("generativelanguage.googleapis.com", 443),
+                       ("8.8.8.8", 53), ("1.1.1.1", 53)):
+        try:
+            with socket.create_connection((host, port), timeout=timeout):
+                return True
+        except Exception:
+            continue
+    return False
+
+
 _CTRL_RE = re.compile(r"<ctrl\d+>", re.IGNORECASE)
 
 def _clean_transcript(text: str) -> str:    
@@ -1433,6 +1448,27 @@ class ParkerLive:
 
     # ── System monitor ──────────────────────────────────────────────────────────
 
+    async def _run_network_watchdog(self) -> None:
+        """Detect a network drop quickly and force the offline transition,
+        instead of waiting for a Gemini request to time out."""
+        misses = 0
+        while self.session is not None:
+            await asyncio.sleep(5)
+            online = await asyncio.to_thread(_has_internet)
+            if online:
+                misses = 0
+                continue
+            misses += 1
+            # Require two consecutive misses (~10s) to avoid a false trip on a
+            # momentary blip.
+            if misses >= 2 and self.session is not None:
+                self.ui.write_log("NET: Internet lost — switching to offline mode.")
+                try:
+                    await self.session.close()      # ends receive() → net-error path
+                except Exception:
+                    pass
+                return
+
     async def _run_system_monitor(self) -> None:
         """Background task: voice alerts when metrics exceed thresholds."""
         while True:
@@ -1646,6 +1682,7 @@ class ParkerLive:
                     tg.create_task(self._run_system_monitor())
                     tg.create_task(self._run_background_monitor())
                     tg.create_task(self._run_proactive_mode())
+                    tg.create_task(self._run_network_watchdog())
                     if self._dashboard:
                         tg.create_task(self._relay_phone_audio())
 
@@ -1679,11 +1716,16 @@ class ParkerLive:
                     _conn_backoff = 3
                     continue
 
-                # Network / timeout errors — log clearly and back off
+                # Network / timeout errors — log clearly and back off. Also treat
+                # it as a network error if an active connectivity check fails (the
+                # watchdog may have closed the session cleanly on a drop).
                 is_net_err = any(k in err_str for k in (
                     "TimeoutError", "timed out", "getaddrinfo", "CancelledError",
                     "ConnectionRefusedError", "OSError", "Cannot connect",
+                    "ConnectionClosed", "connection closed",
                 ))
+                if not is_net_err and not await asyncio.to_thread(_has_internet):
+                    is_net_err = True
                 if is_net_err:
                     _conn_backoff = min(getattr(self, "_conn_backoff", 3) * 2, 60)
                     self._conn_backoff = _conn_backoff
