@@ -323,6 +323,31 @@ TOOL_DECLARATIONS = [
         }, "required": ["action"]},
     },
     {
+        "name": "set_persona",
+        "description": (
+            "Changes Parker's speaking personality/style. Use when the user says "
+            "things like 'switch to Rick', 'talk like Rick and Morty', 'be JARVIS', "
+            "'talk like a pirate', 'go back to normal'. Personas: rick, jarvis, "
+            "pirate, coach, professional, or empty/normal for default. Note: this "
+            "changes the STYLE of speech (and reconnects), not the actual voice "
+            "timbre — the exact copyrighted Rick voice isn't available."
+        ),
+        "parameters": {"type": "OBJECT", "properties": {
+            "persona": {"type": "STRING", "description": "Persona name: rick | jarvis | pirate | coach | professional | normal."}
+        }, "required": ["persona"]},
+    },
+    {
+        "name": "set_voice",
+        "description": (
+            "Changes Parker's spoken VOICE to one of Gemini's prebuilt voices "
+            "(Charon, Puck, Kore, Fenrir, Aoede, Zephyr, Leda, Orus). Use when the "
+            "user asks to change the voice. Reconnects to apply."
+        ),
+        "parameters": {"type": "OBJECT", "properties": {
+            "voice": {"type": "STRING", "description": "Voice name: Charon, Puck, Kore, Fenrir, Aoede, Zephyr, Leda, or Orus."}
+        }, "required": ["voice"]},
+    },
+    {
         "name": "where_am_i",
         "description": (
             "Returns the user's current location. Uses a location the user set "
@@ -851,6 +876,7 @@ class ParkerLive:
         self.ui             = ui
         self._asst_name     = "Parker"   # updated each session from config
         self._offline_history: list = []   # conversation memory for offline mode
+        self._pending_reconnect = False    # reconnect to apply a new voice/persona
         self._offline_voice = None         # OfflineVoice loop, active only offline
         self._announced_offline = False    # spoke the "offline mode" notice once
         self._was_online = False           # True once a cloud session has connected
@@ -1050,6 +1076,18 @@ class ParkerLive:
         parts = [time_ctx, identity_ctx]
         if mem_str:
             parts.append(mem_str)
+
+        # Persona (speaking style) and Gemini voice, from config.
+        try:
+            from memory.config_manager import get_voice, get_persona
+            from actions.personas import persona_snippet
+            voice_name = get_voice()
+            persona = persona_snippet(get_persona())
+            if persona:
+                parts.append("[PERSONA]\n" + persona + "\n")
+        except Exception:
+            voice_name = "Charon"
+
         parts.append(sys_prompt)
 
         return types.LiveConnectConfig(
@@ -1062,7 +1100,7 @@ class ParkerLive:
             speech_config=types.SpeechConfig(
                 voice_config=types.VoiceConfig(
                     prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                        voice_name="Charon"
+                        voice_name=voice_name
                     )
                 )
             ),
@@ -1154,6 +1192,31 @@ class ParkerLive:
                 result = ("Microphone deactivated — I've stopped listening, but I "
                           "can still speak." if mute else
                           "Microphone active — I'm listening again.")
+
+            elif name == "set_persona":
+                from actions.personas import resolve_persona, PERSONAS
+                from memory.config_manager import save_setting
+                key = resolve_persona(args.get("persona", ""))
+                if key is None:
+                    result = "Sir, I don't have that persona. Try Rick, JARVIS, pirate, coach, or normal."
+                else:
+                    save_setting("persona", key)
+                    disp = PERSONAS.get(key, PERSONAS[""])[0]
+                    self.ui.write_log(f"SYS: Persona → {disp}")
+                    result = f"Switching to the {disp} persona now, sir."
+                    self._pending_reconnect = True   # apply on reconnect
+
+            elif name == "set_voice":
+                from actions.personas import resolve_voice
+                from memory.config_manager import save_setting
+                v = resolve_voice(args.get("voice", ""))
+                if v is None:
+                    result = "Sir, that voice isn't available. Options: Charon, Puck, Kore, Fenrir, Aoede, Zephyr, Leda, Orus."
+                else:
+                    save_setting("voice", v)
+                    self.ui.write_log(f"SYS: Voice → {v}")
+                    result = f"Changing my voice to {v}, sir."
+                    self._pending_reconnect = True
 
             elif name == "where_am_i":
                 r = await loop.run_in_executor(None, lambda: where_am_i(parameters=args, player=self.ui))
@@ -1411,6 +1474,19 @@ class ParkerLive:
                         if sc.turn_complete:
                             if self._turn_done_event:
                                 self._turn_done_event.set()
+
+                            # A voice/persona change was requested — reconnect now
+                            # (after the confirmation was spoken) so the new config
+                            # takes effect.
+                            if self._pending_reconnect:
+                                self._pending_reconnect = False
+                                self._conn_backoff = 1
+                                self.ui.write_log("SYS: Applying new voice/persona…")
+                                try:
+                                    await self.session.close()
+                                except Exception:
+                                    pass
+                                return
 
                             # If this turn_complete ends an interrupted response, clear the
                             # flag and skip all further processing for that turn.

@@ -28,7 +28,7 @@ from PyQt6.QtGui import (
     QPen, QPixmap, QRadialGradient, QShortcut,
 )
 from PyQt6.QtWidgets import (
-    QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
+    QApplication, QComboBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
     QMainWindow, QPushButton, QScrollArea, QSizePolicy, QSplitter,
     QStackedWidget, QTextEdit, QVBoxLayout, QWidget, QProgressBar,
 )
@@ -2498,6 +2498,43 @@ class MainWindow(QMainWindow):
         self._drawer_btn.setCheckable(True)
         self._drawer_btn.clicked.connect(self._toggle_drawer)
         lay.addWidget(self._drawer_btn)
+
+        # ── Voice + persona pickers (route through the normal command pipeline) ─
+        from actions.personas import GEMINI_VOICES, PERSONAS
+        _combo_css = (f"QComboBox {{ background: {C.PANEL}; color: {C.TEXT}; "
+                      f"border: 1px solid {C.BORDER}; border-radius: 4px; "
+                      f"padding: 2px 6px; font: 8pt 'Courier New'; }}"
+                      f"QComboBox QAbstractItemView {{ background: {C.PANEL}; "
+                      f"color: {C.TEXT}; selection-background-color: {C.PRI_GHO}; }}")
+
+        self._voice_combo = QComboBox()
+        self._voice_combo.addItems(GEMINI_VOICES)
+        self._voice_combo.setStyleSheet(_combo_css)
+        self._voice_combo.setToolTip("Gemini voice")
+        try:
+            from memory.config_manager import get_voice as _gv, get_persona as _gp
+            _cur_v = _gv()
+            if _cur_v in GEMINI_VOICES:
+                self._voice_combo.setCurrentText(_cur_v)
+        except Exception:
+            pass
+        self._voice_combo.currentTextChanged.connect(self._on_voice_pick)
+        lay.addWidget(self._voice_combo)
+
+        self._persona_combo = QComboBox()
+        self._persona_keys = list(PERSONAS.keys())
+        self._persona_combo.addItems([PERSONAS[k][0] for k in self._persona_keys])
+        self._persona_combo.setStyleSheet(_combo_css)
+        self._persona_combo.setToolTip("Persona / speaking style")
+        try:
+            _cur_p = _gp()
+            if _cur_p in self._persona_keys:
+                self._persona_combo.setCurrentIndex(self._persona_keys.index(_cur_p))
+        except Exception:
+            pass
+        self._persona_combo.currentIndexChanged.connect(self._on_persona_pick)
+        lay.addWidget(self._persona_combo)
+
         lay.addStretch()
 
         mid = QVBoxLayout(); mid.setSpacing(1)
@@ -3276,6 +3313,20 @@ class MainWindow(QMainWindow):
     def _do_interrupt(self):
         if self.on_interrupt:
             self.on_interrupt()
+
+    def _on_voice_pick(self, voice: str):
+        """User picked a voice from the header dropdown → route as a command."""
+        if callable(getattr(self, "on_text_command", None)):
+            self.on_text_command(f"set voice to {voice}")
+
+    def _on_persona_pick(self, index: int):
+        """User picked a persona from the header dropdown → route as a command."""
+        try:
+            key = self._persona_keys[index] or "normal"
+        except Exception:
+            return
+        if callable(getattr(self, "on_text_command", None)):
+            self.on_text_command(f"switch to {key} persona")
 
     def _toggle_mute(self):
         self._set_mic_muted(not self._muted)

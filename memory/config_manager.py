@@ -83,6 +83,32 @@ def get_manual_location() -> str:
     return (load_api_keys().get("manual_location") or "").strip()
 
 
+def get_voice() -> str:
+    """Gemini prebuilt voice name (default 'Charon')."""
+    return (load_api_keys().get("voice") or "Charon").strip() or "Charon"
+
+
+def get_persona() -> str:
+    """Persona/personality key (default '')."""
+    return (load_api_keys().get("persona") or "").strip().lower()
+
+
+def save_setting(key: str, value: str) -> None:
+    """Persist a single config setting."""
+    ensure_config_dir()
+    data: dict = {}
+    if CONFIG_FILE.exists():
+        try:
+            data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+    if value:
+        data[key] = value
+    else:
+        data.pop(key, None)
+    CONFIG_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
 def save_phone_gps(lat: float, lon: float, ts: float) -> None:
     """Persist a GPS fix pushed from the paired phone (lat, lon, unix ts)."""
     ensure_config_dir()
