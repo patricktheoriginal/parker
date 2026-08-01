@@ -45,6 +45,7 @@ vietnam_news: ALWAYS use this when the user asks for news, headlines, or "what's
 home_control: control smart-home devices via Home Assistant (turn lights/fans/switches on/off, toggle, brightness, status).
 home_list: list controllable Home Assistant devices.
 play_spotify: play a named song/artist/playlist on Spotify (searches and starts playback). Use for 'play <song>'. For pause/resume/next/stop, use computer_settings music controls.
+remote_status/remote_list/remote_find/remote_get/remote_exec: reach the user's OTHER computer (e.g. their Mac running the Parker Agent). Use when the user says things like 'I forgot a file on my Mac', 'get my report from the Mac', 'what's on my other computer'. remote_find to locate a file by name, then remote_get to fetch it here. remote_exec runs a command on that machine (advanced).
 where_am_i: use when the user asks where they are or their current location.
 set_my_location: use when the user states where they are (e.g. "I'm in Da Nang", "set my location to Hue", "my location is Da Lat"). This becomes the default starting point for routes and default place for weather. If routes or weather say they can't find your location, ask the user to tell you where they are, then call this.
 LOCATION ACCURACY: For the most accurate current location, the user can tap the 📍 button on the phone Remote Dashboard to share their phone's real GPS. If they ask how to get an accurate location on a desktop without GPS, suggest either that (open the Remote Dashboard on their phone and tap 📍) or telling you their location directly.

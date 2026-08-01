@@ -48,6 +48,9 @@ from actions.market_vn          import gold_price, fuel_price
 from actions.vn_news            import vietnam_news
 from actions.home_assistant     import home_control, home_list
 from actions.spotify            import play_spotify
+from actions.remote_mac         import (
+    remote_status, remote_list, remote_find, remote_get, remote_exec,
+)
 from actions.send_message      import send_message
 from actions.make_call         import make_call
 from actions.reminder          import reminder
@@ -321,6 +324,40 @@ TOOL_DECLARATIONS = [
         "parameters": {"type": "OBJECT", "properties": {
             "action": {"type": "STRING", "description": "'mute'/'deactivate'/'off' to stop listening, or 'unmute'/'activate'/'on' to listen again."}
         }, "required": ["action"]},
+    },
+    {
+        "name": "remote_status",
+        "description": "Checks the connected remote machine (e.g. the user's Mac running the Parker Agent): reachable? OS, CPU, RAM. Use when the user asks about their other computer.",
+        "parameters": {"type": "OBJECT", "properties": {}},
+    },
+    {
+        "name": "remote_list",
+        "description": "Lists files/folders in a directory on the remote machine. Use to browse the other computer. Empty path = its home folder.",
+        "parameters": {"type": "OBJECT", "properties": {
+            "path": {"type": "STRING", "description": "Folder path on the remote machine; empty for home."}
+        }, "required": []},
+    },
+    {
+        "name": "remote_find",
+        "description": "Searches for a file by name on the remote machine (e.g. the user forgot a txt/word/excel on their Mac). Returns matching full paths.",
+        "parameters": {"type": "OBJECT", "properties": {
+            "query": {"type": "STRING", "description": "Part of the filename to search for, e.g. 'budget', 'report.docx'."},
+            "root":  {"type": "STRING", "description": "Folder to search under; empty = home."}
+        }, "required": ["query"]},
+    },
+    {
+        "name": "remote_get",
+        "description": "Fetches a file from the remote machine to THIS computer (saved to Downloads/ParkerRemote). Use after remote_find to grab a forgotten file. Give the full path.",
+        "parameters": {"type": "OBJECT", "properties": {
+            "path": {"type": "STRING", "description": "Full path of the file on the remote machine."}
+        }, "required": ["path"]},
+    },
+    {
+        "name": "remote_exec",
+        "description": "Runs a shell command on the remote machine and returns the output. Full remote control — only if the agent was started with command execution enabled. Use for advanced tasks on the other computer.",
+        "parameters": {"type": "OBJECT", "properties": {
+            "cmd": {"type": "STRING", "description": "The shell command to run on the remote machine."}
+        }, "required": ["cmd"]},
     },
     {
         "name": "set_persona",
@@ -1185,6 +1222,17 @@ class ParkerLive:
 
             elif name == "play_spotify":
                 result = await loop.run_in_executor(None, lambda: play_spotify(parameters=args, player=self.ui))
+
+            elif name == "remote_status":
+                result = await loop.run_in_executor(None, lambda: remote_status(parameters=args, player=self.ui))
+            elif name == "remote_list":
+                result = await loop.run_in_executor(None, lambda: remote_list(parameters=args, player=self.ui))
+            elif name == "remote_find":
+                result = await loop.run_in_executor(None, lambda: remote_find(parameters=args, player=self.ui))
+            elif name == "remote_get":
+                result = await loop.run_in_executor(None, lambda: remote_get(parameters=args, player=self.ui))
+            elif name == "remote_exec":
+                result = await loop.run_in_executor(None, lambda: remote_exec(parameters=args, player=self.ui))
 
             elif name == "microphone_control":
                 act = (args.get("action") or "").lower().strip()
