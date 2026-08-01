@@ -184,9 +184,9 @@ TOOL_DECLARATIONS = [
     {
         "name": "where_am_i",
         "description": (
-            "Returns the user's current approximate location (city/region) based "
-            "on their internet connection. Use when the user asks where they are, "
-            "their current location, or 'where am I'."
+            "Returns the user's current location. On Windows it uses the real GPS "
+            "(OS Location Service); otherwise it is approximate (IP-based). Use "
+            "when the user asks where they are, their current location, or 'where am I'."
         ),
         "parameters": {"type": "OBJECT", "properties": {}},
     },

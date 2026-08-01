@@ -242,14 +242,24 @@ def route_directions(parameters: dict, player=None, session_memory=None) -> str:
         _log(msg, player)
         return msg
 
-    # No origin given → use the device's actual current location (IP-based),
-    # not a hardcoded Hanoi. Fall back to Hanoi only if that lookup fails.
+    # No origin given → use the device's actual current location. On Windows we
+    # require real GPS; if Location is off, ask the user to enable it rather than
+    # guessing a wrong starting point.
     o = None
     if not origin:
-        loc = current_location()
+        import platform as _pf
+        _is_win = _pf.system() == "Windows"
+        loc = current_location(gps_required=_is_win)
         if loc:
             o = (loc["lat"], loc["lon"], loc["label"])
             origin = loc["label"]
+        elif _is_win:
+            msg = ("Sir, I need your current location to plan this route. Please "
+                   "enable Location Services in Windows Settings (Privacy & "
+                   "security → Location) and allow desktop apps to access it, then "
+                   "ask again.")
+            _log(msg, player)
+            return msg
         else:
             origin = "Hanoi"
 
