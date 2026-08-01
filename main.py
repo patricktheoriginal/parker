@@ -47,7 +47,7 @@ from actions.utilities          import (
 from actions.market_vn          import gold_price, fuel_price
 from actions.vn_news            import vietnam_news
 from actions.home_assistant     import home_control, home_list
-from actions.spotify            import play_spotify
+from actions.spotify            import play_spotify, play_favorites
 from actions.remote_mac         import (
     remote_status, remote_list, remote_find, remote_get, remote_exec,
 )
@@ -309,6 +309,16 @@ TOOL_DECLARATIONS = [
         "parameters": {"type": "OBJECT", "properties": {
             "query": {"type": "STRING", "description": "Song, artist, or playlist to play, e.g. 'Blinding Lights The Weeknd'."}
         }, "required": ["query"]},
+    },
+    {
+        "name": "play_favorites",
+        "description": (
+            "Plays the user's Liked Songs (their favorites / saved tracks) on "
+            "Spotify, shuffled. Use when the user asks to play their favorites, "
+            "e.g. 'play my favorite', 'play my favorites', 'play my liked songs', "
+            "'play my saved songs'. Takes no arguments."
+        ),
+        "parameters": {"type": "OBJECT", "properties": {}},
     },
     {
         "name": "microphone_control",
@@ -1240,6 +1250,9 @@ class ParkerLive:
 
             elif name == "play_spotify":
                 result = await loop.run_in_executor(None, lambda: play_spotify(parameters=args, player=self.ui))
+
+            elif name == "play_favorites":
+                result = await loop.run_in_executor(None, lambda: play_favorites(parameters=args, player=self.ui))
 
             elif name == "remote_status":
                 result = await loop.run_in_executor(None, lambda: remote_status(parameters=args, player=self.ui))

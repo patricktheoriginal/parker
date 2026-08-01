@@ -131,6 +131,108 @@ def _play_via_api(query: str) -> str | None:
         return f"Sir, I couldn't start playback: {e}"
 
 
+def _play_liked_via_api(shuffle: bool = True) -> str | None:
+    """Play the user's Liked Songs. The Web API has no context URI for the
+    Liked-Songs collection, so we fetch the saved tracks and play their URIs.
+    Returns a message, or None if the API path is unavailable (→ UI fallback)."""
+    token = _access_token()
+    if not token:
+        return None                       # not configured → caller falls back
+
+    # Fetch saved (liked) tracks — up to a few hundred so a session has variety.
+    uris = []
+    try:
+        url = f"{_API}/me/tracks?limit=50"
+        for _ in range(4):                # up to 200 tracks
+            res = _http(url, headers=_api_headers(token))
+            for it in res.get("items", []):
+                tr = it.get("track") or {}
+                if tr.get("uri"):
+                    uris.append(tr["uri"])
+            url = res.get("next")
+            if not url:
+                break
+    except Exception as e:
+        print(f"[Spotify] fetch liked failed: {e}")
+        return None
+    if not uris:
+        return "Sir, you have no Liked Songs on Spotify yet."
+
+    if shuffle:
+        import random
+        random.shuffle(uris)
+
+    # Find a device to play on (open the app if needed).
+    device = _active_device(token)
+    if not device:
+        try:
+            from actions.open_app import open_app
+            open_app(parameters={"app_name": "Spotify"})
+            time.sleep(3)
+            device = _active_device(token)
+        except Exception:
+            pass
+    if not device:
+        return ("Sir, no active Spotify device. Open Spotify on this PC or your "
+                "phone, then ask again.")
+
+    # Turn on shuffle on the player too (best-effort), then play the URIs.
+    try:
+        if shuffle:
+            try:
+                _http(f"{_API}/me/player/shuffle?state=true&device_id={device}",
+                      method="PUT", headers=_api_headers(token))
+            except Exception:
+                pass
+        # The play endpoint accepts at most 100 URIs at a time.
+        body = json.dumps({"uris": uris[:100]}).encode()
+        _http(f"{_API}/me/player/play?device_id={device}",
+              data=body, method="PUT", headers=_api_headers(token))
+        return f"Playing your Liked Songs on Spotify ({len(uris)} tracks, shuffled)."
+    except urllib.error.HTTPError as e:
+        if e.code == 403:
+            return "Sir, Spotify playback control needs a Premium account."
+        return f"Sir, I couldn't start playback: {e}"
+    except Exception as e:
+        return f"Sir, I couldn't start playback: {e}"
+
+
+def _play_liked_via_ui() -> str:
+    """Fallback: open Spotify and navigate to Liked Songs, then play."""
+    try:
+        import pyautogui
+    except Exception:
+        return "Sir, I can't control Spotify without pyautogui installed."
+    try:
+        from actions.open_app import open_app
+        open_app(parameters={"app_name": "Spotify"})
+        time.sleep(3.0)
+        # Ctrl+Shift+K jumps to the Liked Songs page in the desktop app.
+        pyautogui.hotkey("ctrl", "shift", "k")
+        time.sleep(1.5)
+        pyautogui.press("enter")           # play the list
+        return ("I opened your Liked Songs on Spotify and started playback. "
+                "If it didn't play, press Play — or set up the Spotify API for "
+                "reliable control.")
+    except Exception as e:
+        return f"Sir, I couldn't control Spotify: {e}"
+
+
+def play_favorites(parameters: dict = None, player=None, session_memory=None) -> str:
+    """Play the user's Liked Songs (favorites) on Spotify, shuffled."""
+    msg = _play_liked_via_api(shuffle=True)
+    if msg is None:                        # API not configured → UI fallback
+        msg = _play_liked_via_ui()
+
+    print(f"[Spotify] {msg}")
+    if player:
+        try:
+            player.write_log(f"[spotify] {msg}")
+        except Exception:
+            pass
+    return msg
+
+
 def _play_via_ui(query: str) -> str:
     """Fallback: drive the Spotify desktop app — open, search, play top result."""
     try:
