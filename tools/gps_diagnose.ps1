@@ -4,15 +4,19 @@
 $ErrorActionPreference = 'Continue'
 Write-Output "=== Parker GPS diagnostic ==="
 
+# On Windows PowerShell 5 (.NET Framework), the WinRT interop extension type
+# lives in System.Runtime.WindowsRuntime, which must be loaded explicitly.
+[System.Reflection.Assembly]::Load('System.Runtime.WindowsRuntime, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a') | Out-Null
+
 # Helper: correctly await a WinRT IAsyncOperation[T] from PowerShell.
+$script:asTask = [System.WindowsRuntimeSystemExtensions].GetMethods() |
+    Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and
+                   $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' } |
+    Select-Object -First 1
 function Await($op, $resultType) {
-    $task = [System.WindowsRuntimeSystemExtensions].GetMethods() |
-        Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and
-                       $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' } |
-        Select-Object -First 1
-    $task = $task.MakeGenericMethod($resultType)
-    $t = $task.Invoke($null, @($op))
-    $t.Wait(15000) | Out-Null
+    $m = $script:asTask.MakeGenericMethod($resultType)
+    $t = $m.Invoke($null, @($op))
+    $t.Wait(20000) | Out-Null
     return $t.Result
 }
 

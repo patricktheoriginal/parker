@@ -144,13 +144,17 @@ $ErrorActionPreference = 'Stop'
 $inv = [System.Globalization.CultureInfo]::InvariantCulture
 function Out-Pos($lat,$lon){ Write-Output ("OK|" + $lat.ToString($inv) + "|" + $lon.ToString($inv)) }
 
+# On Windows PowerShell 5 (.NET Framework) the WinRT interop extension type is
+# in System.Runtime.WindowsRuntime, which must be loaded explicitly.
+try { [System.Reflection.Assembly]::Load('System.Runtime.WindowsRuntime, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a') | Out-Null } catch {}
+
 # Correctly await a WinRT IAsyncOperation[T] from PowerShell.
+$asTask = [System.WindowsRuntimeSystemExtensions].GetMethods() |
+    Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and
+                   $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' } |
+    Select-Object -First 1
 function Await($op, $resultType) {
-    $m = [System.WindowsRuntimeSystemExtensions].GetMethods() |
-        Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and
-                       $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' } |
-        Select-Object -First 1
-    $m = $m.MakeGenericMethod($resultType)
+    $m = $asTask.MakeGenericMethod($resultType)
     $t = $m.Invoke($null, @($op))
     $t.Wait(20000) | Out-Null
     return $t.Result
