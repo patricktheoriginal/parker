@@ -14,7 +14,6 @@ Dependencies (installed via requirements-offline.txt):
 """
 
 import threading
-import time
 import queue
 
 import numpy as np

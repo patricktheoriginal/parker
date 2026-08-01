@@ -12,7 +12,6 @@ Configure in config/api_keys.json:
 Fetched files are saved to ~/Downloads/ParkerRemote/ on THIS machine.
 """
 
-import base64
 import json
 from pathlib import Path
 from urllib.request import Request, urlopen

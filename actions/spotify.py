@@ -336,12 +336,11 @@ def _play_liked_via_ui(shuffle: bool = True) -> str:
     then double-click the first track to play the whole list. Works without
     Premium since it drives the desktop app."""
     try:
-        import pyautogui  # noqa: F401
+        import pyautogui
     except Exception:
         return ("Sir, I can't control Spotify without pyautogui installed "
                 "(pip install pyautogui pygetwindow).")
     try:
-        import pyautogui
         from actions.open_app import open_app
         open_app(parameters={"app_name": "Spotify"})
         time.sleep(2.0)
@@ -644,9 +643,8 @@ def play_playlist(parameters: dict = None, player=None, session_memory=None) -> 
 def _play_playlist_via_ui(pl: dict) -> str:
     """Free-account path: open a playlist by its spotify: URI and start it by
     double-clicking the first track (a real context play)."""
-    try:
-        import pyautogui  # noqa: F401
-    except Exception:
+    import importlib.util
+    if importlib.util.find_spec("pyautogui") is None:
         return "Sir, I can't control Spotify without pyautogui installed."
     try:
         from actions.open_app import open_app
