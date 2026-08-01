@@ -308,6 +308,21 @@ TOOL_DECLARATIONS = [
         }, "required": ["query"]},
     },
     {
+        "name": "microphone_control",
+        "description": (
+            "Turns Parker's MICROPHONE (command input / listening) on or off. This "
+            "does NOT change speaker volume — Parker can still speak while its mic "
+            "is off. Use ONLY when the user mentions the microphone specifically: "
+            "'mute the microphone', 'deactivate mic', 'stop listening', 'turn the "
+            "mic back on', 'activate microphone'. "
+            "Do NOT use this for plain 'mute'/'unmute' (that's the speaker → use "
+            "computer_settings mute/unmute)."
+        ),
+        "parameters": {"type": "OBJECT", "properties": {
+            "action": {"type": "STRING", "description": "'mute'/'deactivate'/'off' to stop listening, or 'unmute'/'activate'/'on' to listen again."}
+        }, "required": ["action"]},
+    },
+    {
         "name": "where_am_i",
         "description": (
             "Returns the user's current location. Uses a location the user set "
@@ -1131,6 +1146,14 @@ class ParkerLive:
 
             elif name == "play_spotify":
                 result = await loop.run_in_executor(None, lambda: play_spotify(parameters=args, player=self.ui))
+
+            elif name == "microphone_control":
+                act = (args.get("action") or "").lower().strip()
+                mute = act in ("mute", "deactivate", "off", "stop", "disable")
+                self.ui.set_mic_muted(mute)
+                result = ("Microphone deactivated — I've stopped listening, but I "
+                          "can still speak." if mute else
+                          "Microphone active — I'm listening again.")
 
             elif name == "where_am_i":
                 r = await loop.run_in_executor(None, lambda: where_am_i(parameters=args, player=self.ui))

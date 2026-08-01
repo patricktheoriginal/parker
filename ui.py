@@ -1784,6 +1784,7 @@ class MainWindow(QMainWindow):
     _cam_frame_sig  = pyqtSignal(bytes)      # live camera frame → HUD area
     _clipboard_sig  = pyqtSignal(str)        # clipboard text changed (thread-safe)
     _routemap_sig   = pyqtSignal(str)        # route map HTML string → show inline
+    _mic_sig        = pyqtSignal(bool)        # set mic mute state (True=mute)
 
     def __init__(self, face_path: str):
         super().__init__()
@@ -1926,6 +1927,7 @@ class MainWindow(QMainWindow):
         self._cam_frame_sig.connect(self._on_cam_frame)
         self._clipboard_sig.connect(self._show_clipboard_panel)
         self._routemap_sig.connect(self._show_route_map)
+        self._mic_sig.connect(self._set_mic_muted)
         self._route_win = None            # embedded route-map window (if WebEngine)
         self._cam_stop = threading.Event()
 
@@ -3276,12 +3278,19 @@ class MainWindow(QMainWindow):
             self.on_interrupt()
 
     def _toggle_mute(self):
-        self._muted = not self._muted
+        self._set_mic_muted(not self._muted)
+
+    def _set_mic_muted(self, mute: bool):
+        """Set the MICROPHONE (command input) mute state. This never touches the
+        speaker/output volume — it only stops Parker from listening."""
+        if mute == self._muted:
+            return
+        self._muted = mute
         self.hud.muted = self._muted
         self._style_mute_btn()
         if self._muted:
             self._apply_state("MUTED")
-            self._log.append_log("SYS: Microphone muted.")
+            self._log.append_log("SYS: Microphone deactivated (not listening).")
         else:
             self._apply_state("LISTENING")
             self._log.append_log("SYS: Microphone active.")
@@ -3377,6 +3386,11 @@ class ParkerUI:
     def muted(self, v: bool):
         if v != self._win._muted:
             self._win._toggle_mute()
+
+    def set_mic_muted(self, mute: bool) -> None:
+        """Thread-safe: mute/unmute the MICROPHONE (command input) only.
+        Does not affect speaker/output volume."""
+        self._win._mic_sig.emit(bool(mute))
 
     @property
     def current_file(self) -> str | None:

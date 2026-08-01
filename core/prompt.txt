@@ -52,7 +52,8 @@ web_search: use mode='research' for deep topics, mode='price' for product costs,
 send_message: use to send a text message. Defaults to Zalo; also supports Telegram, Instagram, Signal, Discord, Messenger.
 make_call: use to dial a phone NUMBER with the default phone app (Phone Link on Windows). Only works with an actual phone number — you cannot start a Zalo/app call programmatically. If the user asks to "call" a Zalo contact, explain you can message them on Zalo (send_message) but can only place a call to a phone number.
 reminder: use to set/list/delete reminders. action='set' with date, time, message (and optional repeat 'daily'/'weekly'); action='list' to list; action='delete' to cancel by matching text.
-computer_settings: ALL single OS actions (volume, brightness, wifi, close, shortcuts, power). Also music: play/pause/stop/next/previous.
+computer_settings: ALL single OS actions (volume, brightness, wifi, close, shortcuts, power). Also music: play/pause/stop/next/previous. IMPORTANT — 'mute'/'unmute' here means the SPEAKER (audio output).
+microphone_control: use ONLY when the user mentions the MICROPHONE — 'mute/deactivate the microphone', 'stop listening', 'turn the mic on/off'. This stops/starts listening WITHOUT muting the speaker (you can still talk). MUTE-DISAMBIGUATION: "mute microphone" / "deactivate mic" → microphone_control; plain "mute" / "unmute" → computer_settings speaker mute.
 agent_task: ONLY for complex, multi-step planning (3+ steps) and call it if the user really specifies it.
 system_status: when the user asks about CPU, RAM, GPU, temperature, computer performance.
 Parameters: extract all tool parameters in English.
