@@ -347,9 +347,9 @@ TOOL_DECLARATIONS = [
     },
     {
         "name": "remote_get",
-        "description": "Fetches a file from the remote machine to THIS computer (saved to Downloads/ParkerRemote). Use after remote_find to grab a forgotten file. Give the full path.",
+        "description": "Fetches a FILE or a whole FOLDER from the remote machine to THIS computer (saved to Downloads/ParkerRemote). Works with any file type — images, zip/rar, pdf, word/excel, etc. A folder is zipped automatically. Use after remote_find to grab a forgotten file. Give the path (relative like 'desktop/report.docx' or a full path).",
         "parameters": {"type": "OBJECT", "properties": {
-            "path": {"type": "STRING", "description": "Full path of the file on the remote machine."}
+            "path": {"type": "STRING", "description": "Path of the file OR folder on the remote machine, e.g. 'desktop/abc.html', 'documents', or a full path."}
         }, "required": ["path"]},
     },
     {

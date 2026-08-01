@@ -148,14 +148,45 @@ def _search(root: str, query: str) -> dict:
     return {"matches": hits}
 
 
+_MAX_TRANSFER = 500 * 1024 * 1024   # 500 MB cap for a single fetch
+
+
 def _get_file(path: str) -> dict:
+    """Fetch ANY file (image, zip/rar, pdf, docx, xlsx, …) as raw bytes, or a
+    whole FOLDER zipped on the fly. Returns base64 of the bytes."""
     p = _resolve_path(path)
-    if not _within_roots(p) or not p.is_file():
+    if not _within_roots(p):
+        return {"error": "not allowed"}
+
+    # Folder → zip it in memory and return the zip.
+    if p.is_dir():
+        import io
+        import zipfile
+        buf = io.BytesIO()
+        total = 0
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for f in p.rglob("*"):
+                if not f.is_file():
+                    continue
+                try:
+                    total += f.stat().st_size
+                    if total > _MAX_TRANSFER:
+                        return {"error": f"folder too large (> {_MAX_TRANSFER // (1024*1024)} MB)"}
+                    zf.write(f, f.relative_to(p.parent))
+                except Exception:
+                    continue
+        raw = buf.getvalue()
+        return {"name": p.name + ".zip", "size": len(raw), "kind": "folder-zip",
+                "b64": base64.b64encode(raw).decode()}
+
+    if not p.is_file():
         return {"error": "not allowed or not a file"}
-    if p.stat().st_size > 25 * 1024 * 1024:
-        return {"error": "file too large (>25 MB)"}
+    if p.stat().st_size > _MAX_TRANSFER:
+        return {"error": f"file too large (> {_MAX_TRANSFER // (1024*1024)} MB)"}
+    # Works for any file type — images, archives, documents — it's raw bytes.
     data = base64.b64encode(p.read_bytes()).decode()
-    return {"name": p.name, "size": p.stat().st_size, "b64": data}
+    return {"name": p.name, "size": p.stat().st_size, "kind": "file",
+            "b64": data}
 
 
 def _system_status() -> dict:

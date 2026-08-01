@@ -111,10 +111,11 @@ def remote_get(parameters: dict, player=None, session_memory=None) -> str:
         return _not_configured()
     path = (parameters or {}).get("path", "").strip()
     if not path:
-        return "Sir, which file should I fetch? Give the full path (use 'find' first)."
-    d = _rpc("get", {"path": path}, timeout=60)
+        return "Sir, which file or folder should I fetch? (use 'find' first if unsure)."
+    # Larger timeout — folders/archives/images can be big.
+    d = _rpc("get", {"path": path}, timeout=180)
     if d.get("error"):
-        return f"Sir, I couldn't fetch that file: {d['error']}"
+        return f"Sir, I couldn't fetch that: {d['error']}"
     try:
         dest_dir = Path.home() / "Downloads" / "ParkerRemote"
         dest_dir.mkdir(parents=True, exist_ok=True)
@@ -122,7 +123,10 @@ def remote_get(parameters: dict, player=None, session_memory=None) -> str:
         dest.write_bytes(base64.b64decode(d["b64"]))
     except Exception as e:
         return f"Sir, I fetched it but couldn't save it: {e}"
-    return (f"Got '{d['name']}' ({d['size']:,} bytes) from the remote machine. "
+    what = "folder (zipped)" if d.get("kind") == "folder-zip" else "file"
+    size_mb = d["size"] / (1024 * 1024)
+    size_str = f"{size_mb:.1f} MB" if size_mb >= 1 else f"{d['size']:,} bytes"
+    return (f"Got the {what} '{d['name']}' ({size_str}) from the remote machine. "
             f"Saved to {dest}.")
 
 
