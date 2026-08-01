@@ -23,8 +23,11 @@ from datetime import datetime, timedelta
 from urllib.parse import quote_plus, urlencode
 from urllib.request import Request, urlopen
 
-# Reuse the province-level geocoder from the weather module as a fallback.
-from actions.weather_report import _geocode_vn as _geocode_province, _http_json, _VN_TZ
+# Reuse the province-level geocoder from the weather module as a fallback,
+# plus the shared IP-based current-location lookup.
+from actions.weather_report import (
+    _geocode_vn as _geocode_province, _http_json, _VN_TZ, current_location,
+)
 
 _OSRM_URL = "https://router.project-osrm.org/route/v1/driving"
 _FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
@@ -238,12 +241,21 @@ def route_directions(parameters: dict, player=None, session_memory=None) -> str:
         msg = "Sir, please tell me the destination for the route."
         _log(msg, player)
         return msg
-    if not origin:
-        # No origin given — default to Hanoi so we can still plan a route.
-        origin = "Hanoi"
 
-    o = _geocode_place(origin)
-    time.sleep(1.1)   # Nominatim usage policy: ~1 request/second
+    # No origin given → use the device's actual current location (IP-based),
+    # not a hardcoded Hanoi. Fall back to Hanoi only if that lookup fails.
+    o = None
+    if not origin:
+        loc = current_location()
+        if loc:
+            o = (loc["lat"], loc["lon"], loc["label"])
+            origin = loc["label"]
+        else:
+            origin = "Hanoi"
+
+    if o is None:
+        o = _geocode_place(origin)
+        time.sleep(1.1)   # Nominatim usage policy: ~1 request/second
     d = _geocode_place(dest)
 
     # If we couldn't pin exact coordinates (e.g. a very specific address OSM

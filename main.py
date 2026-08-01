@@ -37,7 +37,7 @@ from memory.memory_manager import (
 from actions.file_processor import file_processor
 from actions.flight_finder     import flight_finder
 from actions.open_app          import open_app
-from actions.weather_report    import weather_action, rain_forecast
+from actions.weather_report    import weather_action, rain_forecast, where_am_i
 from actions.maps_route         import route_directions
 from actions.send_message      import send_message
 from actions.reminder          import reminder
@@ -182,6 +182,15 @@ TOOL_DECLARATIONS = [
         }
     },
     {
+        "name": "where_am_i",
+        "description": (
+            "Returns the user's current approximate location (city/region) based "
+            "on their internet connection. Use when the user asks where they are, "
+            "their current location, or 'where am I'."
+        ),
+        "parameters": {"type": "OBJECT", "properties": {}},
+    },
+    {
         "name": "route_directions",
         "description": (
             "Plans the fastest driving route between two places in Vietnam and "
@@ -196,7 +205,7 @@ TOOL_DECLARATIONS = [
             "type": "OBJECT",
             "properties": {
                 "destination": {"type": "STRING", "description": "Destination in Vietnam — a city, province, landmark, or a specific street address (e.g. '208 Nguyen Huu Canh, Binh Thanh, Ho Chi Minh City'). Pass the full address exactly as the user said it."},
-                "origin":      {"type": "STRING", "description": "Starting place or full address in Vietnam. Leave empty if the user did not specify one."},
+                "origin":      {"type": "STRING", "description": "Starting place or full address in Vietnam. Leave empty if the user did not specify one — it will use the user's current location automatically."},
                 "depart_time": {"type": "STRING", "description": "Desired departure time, e.g. '7am', '15:30', or 'now'. Default is now."}
             },
             "required": ["destination"]
@@ -783,6 +792,10 @@ class ParkerLive:
             elif name == "rain_forecast":
                 r = await loop.run_in_executor(None, lambda: rain_forecast(parameters=args, player=self.ui))
                 result = r or "Rain forecast delivered."
+
+            elif name == "where_am_i":
+                r = await loop.run_in_executor(None, lambda: where_am_i(parameters=args, player=self.ui))
+                result = r or "Location delivered."
 
             elif name == "route_directions":
                 r = await loop.run_in_executor(None, lambda: route_directions(parameters=args, player=self.ui))

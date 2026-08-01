@@ -26,7 +26,8 @@ TOOL ROUTING:
 
 weather_report: use for any weather question. Default the location to Vietnam (or the specific Vietnamese province/city named).
 rain_forecast: use when the user specifically asks about rain / chance of rain in Vietnam.
-route_directions: use when the user asks for directions, the route to a place, how to get somewhere, how far/how long a drive is, or the best time to leave — for places in Vietnam. Works with cities, provinces, landmarks, and specific street addresses. Pass the destination exactly as the user said it (including full street address if given); leave origin empty if the user did not name a starting point; pass depart_time if the user mentions a time.
+route_directions: use when the user asks for directions, the route to a place, how to get somewhere, how far/how long a drive is, or the best time to leave — for places in Vietnam. Works with cities, provinces, landmarks, and specific street addresses. Pass the destination exactly as the user said it (including full street address if given); leave origin empty if the user did not name a starting point (it uses the user's current location automatically); pass depart_time if the user mentions a time.
+where_am_i: use when the user asks where they are or their current location.
 web_search: use mode='news' for current events (default to Vietnam news), mode='research' for deep topics, mode='price' for product costs.
 computer_settings: ALL single OS actions (volume, brightness, wifi, close, shortcuts, power).
 agent_task: ONLY for complex, multi-step planning (3+ steps) and call it if the user really specifies it.

@@ -95,6 +95,55 @@ def _http_json(url: str, timeout: int = 12) -> dict:
         return _json.load(resp)
 
 
+# ── Current location (IP-based geolocation — free, no key, no permission) ─────
+import time as _time
+
+_LOC_CACHE: dict = {}          # cached result of the last successful lookup
+_LOC_TTL = 900                 # re-check at most every 15 minutes
+
+
+def current_location() -> dict | None:
+    """Best-effort current location via IP geolocation.
+
+    Returns {'lat', 'lon', 'city', 'region', 'country', 'label'} or None.
+    No GPS/permission needed — accurate to the city level. Cached briefly so a
+    burst of calls doesn't hammer the service.
+    """
+    now = _time.time()
+    cached = _LOC_CACHE.get("data")
+    if cached and (now - _LOC_CACHE.get("t", 0)) < _LOC_TTL:
+        return cached
+
+    # Primary: ip-api.com (reliable, generous). Fallback: ipapi.co.
+    for url, keymap in (
+        ("http://ip-api.com/json/?fields=status,city,regionName,country,lat,lon",
+         {"lat": "lat", "lon": "lon", "city": "city", "region": "regionName", "country": "country"}),
+        ("https://ipapi.co/json/",
+         {"lat": "latitude", "lon": "longitude", "city": "city", "region": "region", "country": "country_name"}),
+    ):
+        try:
+            d = _http_json(url, timeout=8)
+            if d.get("status") == "fail":
+                continue
+            lat = d.get(keymap["lat"]); lon = d.get(keymap["lon"])
+            if lat is None or lon is None:
+                continue
+            city = d.get(keymap["city"]) or ""
+            region = d.get(keymap["region"]) or ""
+            country = d.get(keymap["country"]) or ""
+            label = ", ".join([p for p in (city, region, country) if p]) or "your location"
+            result = {
+                "lat": float(lat), "lon": float(lon),
+                "city": city, "region": region, "country": country, "label": label,
+            }
+            _LOC_CACHE["data"] = result
+            _LOC_CACHE["t"] = now
+            return result
+        except Exception:
+            continue
+    return None
+
+
 def _geocode_search(name: str, count: int = 5) -> list[dict]:
     q = _urlparse.urlencode({"name": name, "count": count, "language": "en", "format": "json"})
     try:
@@ -150,17 +199,19 @@ def rain_forecast(parameters: dict, player=None, session_memory=None) -> str:
         days = 3
 
     if not place:
-        place = "Hanoi"  # a concrete VN point to anchor the national forecast
-        default_used = True
+        # No place given → use the device's actual current location.
+        loc = current_location()
+        if loc:
+            lat, lon, label = loc["lat"], loc["lon"], loc["label"]
+        else:
+            lat, lon, label = _geocode_vn("Hanoi")
     else:
-        default_used = False
-
-    geo = _geocode_vn(place)
-    if not geo:
-        msg = f"Sir, I couldn't locate '{place}' for a rain forecast."
-        _log(msg, player)
-        return msg
-    lat, lon, label = geo
+        geo = _geocode_vn(place)
+        if not geo:
+            msg = f"Sir, I couldn't locate '{place}' for a rain forecast."
+            _log(msg, player)
+            return msg
+        lat, lon, label = geo
 
     params = _urlparse.urlencode({
         "latitude": lat, "longitude": lon,
@@ -178,8 +229,7 @@ def rain_forecast(parameters: dict, player=None, session_memory=None) -> str:
         _log(msg, player)
         return msg
 
-    where = "Vietnam" if default_used else label
-    parts = [f"Rain forecast for {where}:"]
+    parts = [f"Rain forecast for {label}:"]
     for i in range(min(days, len(dates))):
         prob = probs[i] if probs[i] is not None else 0
         mm   = sums[i] if sums[i] is not None else 0
@@ -198,7 +248,18 @@ def rain_forecast(parameters: dict, player=None, session_memory=None) -> str:
     _log(msg, player)
     if session_memory:
         try:
-            session_memory.set_last_search(query=f"rain forecast {where}", response=msg)
+            session_memory.set_last_search(query=f"rain forecast {label}", response=msg)
         except Exception:
             pass
+    return msg
+
+def where_am_i(parameters: dict = None, player=None, session_memory=None) -> str:
+    """Report the user's current approximate location (IP-based)."""
+    loc = current_location()
+    if not loc:
+        msg = "Sir, I couldn't determine your current location right now."
+        _log(msg, player)
+        return msg
+    msg = f"You appear to be in {loc['label']}, sir."
+    _log(msg, player)
     return msg
