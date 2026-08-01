@@ -93,8 +93,33 @@ def _within_roots(p: Path) -> bool:
     return False
 
 
+def _resolve_path(path: str) -> Path:
+    """Turn a user/LLM-supplied path into an absolute one under home.
+
+    Handles: '' → home; '~/x' → home/x; absolute paths as-is; and relative
+    paths like 'desktop', 'Documents/report.docx', or a bare name → home/…
+    (case-insensitive for the common home folders)."""
+    if not path:
+        return Path.home()
+    p = path.strip()
+    if p.startswith("~"):
+        return Path(p).expanduser()
+    pp = Path(p)
+    if pp.is_absolute():
+        return pp
+    # Relative → under home. Fix common case differences (desktop → Desktop).
+    parts = pp.parts
+    _home_folders = {"desktop": "Desktop", "documents": "Documents",
+                     "downloads": "Downloads", "pictures": "Pictures",
+                     "movies": "Movies", "music": "Music", "public": "Public",
+                     "library": "Library"}
+    if parts and parts[0].lower() in _home_folders:
+        parts = (_home_folders[parts[0].lower()],) + parts[1:]
+    return Path.home().joinpath(*parts)
+
+
 def _list_dir(path: str) -> dict:
-    p = Path(path).expanduser() if path else Path.home()
+    p = _resolve_path(path)
     if not _within_roots(p) or not p.is_dir():
         return {"error": "not allowed or not a directory"}
     items = []
@@ -108,7 +133,7 @@ def _list_dir(path: str) -> dict:
 
 
 def _search(root: str, query: str) -> dict:
-    base = Path(root).expanduser() if root else Path.home()
+    base = _resolve_path(root)
     if not _within_roots(base):
         return {"error": "not allowed"}
     q = query.lower()
@@ -124,7 +149,7 @@ def _search(root: str, query: str) -> dict:
 
 
 def _get_file(path: str) -> dict:
-    p = Path(path).expanduser()
+    p = _resolve_path(path)
     if not _within_roots(p) or not p.is_file():
         return {"error": "not allowed or not a file"}
     if p.stat().st_size > 25 * 1024 * 1024:
