@@ -650,6 +650,7 @@ class ParkerLive:
     def __init__(self, ui: ParkerUI):
         self.ui             = ui
         self._asst_name     = "Parker"   # updated each session from config
+        self._offline_history: list = []   # conversation memory for offline mode
         self.session              = None
         self.audio_in_queue       = None
         self.out_queue            = None
@@ -688,15 +689,45 @@ class ParkerLive:
         return url, key, f"{url}/auto-login?key={key}", manual
 
     def _on_text_command(self, text: str):
-        if not self._loop or not self.session:
+        # Online: send to the Gemini Live session as usual.
+        if self._loop and self.session:
+            asyncio.run_coroutine_threadsafe(
+                self.session.send_client_content(
+                    turns={"parts": [{"text": text}]},
+                    turn_complete=True
+                ),
+                self._loop
+            )
             return
-        asyncio.run_coroutine_threadsafe(
-            self.session.send_client_content(
-                turns={"parts": [{"text": text}]},
-                turn_complete=True
-            ),
-            self._loop
-        )
+        # Offline (no Gemini session): fall back to the local Ollama agent.
+        self._handle_offline_text(text)
+
+    def _handle_offline_text(self, text: str) -> None:
+        """Answer a typed command with the local offline model, in a thread."""
+        def _work():
+            try:
+                from core.offline_agent import offline_respond, offline_available
+                if not offline_available():
+                    self.ui.write_log(
+                        "SYS: Offline mode unavailable — start Ollama (ollama serve) "
+                        "and pull a model like llama3.2:3b.")
+                    return
+                self.ui.set_state("THINKING")
+                self.ui.write_log("SYS: Offline (local model) — thinking…")
+                reply = offline_respond(
+                    text, history=self._offline_history,
+                    log=lambda m: None,
+                )
+                self._offline_history.append({"role": "user", "content": text})
+                self._offline_history.append({"role": "assistant", "content": reply})
+                self._offline_history = self._offline_history[-12:]
+                self.ui.write_log(f"{self._asst_name}: {reply}")
+            except Exception as e:
+                self.ui.write_log(f"ERR: Offline agent failed — {e}")
+            finally:
+                if not self.ui.muted:
+                    self.ui.set_state("LISTENING")
+        threading.Thread(target=_work, daemon=True).start()
 
     def set_speaking(self, value: bool):
         with self._speaking_lock:
@@ -1614,9 +1645,17 @@ class ParkerLive:
                     _conn_backoff = min(getattr(self, "_conn_backoff", 3) * 2, 60)
                     self._conn_backoff = _conn_backoff
                     self.ui.write_log(
-                        f"NET: Bağlantı kurulamadı — {_conn_backoff}s sonra tekrar deneniyor. "
-                        "(VPN gerekiyor olabilir)"
-                    )
+                        f"NET: Can't reach Gemini — retrying in {_conn_backoff}s.")
+                    # Offer offline mode: if a local model is available, the user
+                    # can keep working by TYPING commands while we're offline.
+                    try:
+                        from core.offline_agent import offline_available
+                        if offline_available():
+                            self.ui.write_log(
+                                "SYS: OFFLINE MODE ready — type a command to use the "
+                                "local model (voice needs the cloud).")
+                    except Exception:
+                        pass
                 else:
                     self._conn_backoff = 3
             finally:

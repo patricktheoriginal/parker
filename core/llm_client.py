@@ -218,11 +218,56 @@ def check_model_available(log: Callable | None = None) -> bool:
         return True   # Ollama might still be starting up; non-blocking
 
 
+def list_ollama_models(url: str | None = None) -> list[str]:
+    """Return the names of models installed in Ollama, or [] if unreachable."""
+    if url is None:
+        url = _load_config().get("llm_url", _DEFAULTS["llm_url"]).rstrip("/")
+    try:
+        r = requests.get(f"{url}/api/tags", timeout=4)
+        r.raise_for_status()
+        return [m.get("name", "") for m in r.json().get("models", [])]
+    except Exception:
+        return []
+
+
+def _score_model(name: str) -> int:
+    """Rank installed models — prefer better tool-callers and larger sizes."""
+    n = name.lower()
+    score = 0
+    # Families that handle tool-calling well
+    for fam, s in (("qwen2.5", 40), ("llama3.1", 35), ("llama3.2", 30),
+                   ("mistral", 25), ("qwen2", 20), ("gemma2", 15)):
+        if fam in n:
+            score += s
+            break
+    # Size hint: bigger is better for tool use (…:7b > :3b > :1b)
+    import re as _re
+    m = _re.search(r"(\d+(?:\.\d+)?)\s*b", n)
+    if m:
+        try: score += min(int(float(m.group(1))), 14)
+        except Exception: pass
+    return score
+
+
+def pick_best_model(url: str | None = None) -> str | None:
+    """Choose the most capable installed model (best tool-caller, largest)."""
+    models = [m for m in list_ollama_models(url) if m]
+    if not models:
+        return None
+    return max(models, key=_score_model)
+
+
 def get_llm_settings() -> tuple[str, str]:
-    """Returns (base_url, model_name)."""
+    """Returns (base_url, model_name).
+
+    If config pins 'llm_model', use it. Otherwise auto-pick the best model
+    installed in Ollama (e.g. a 3b over a 1b), falling back to the default.
+    """
     cfg   = _load_config()
     url   = cfg.get("llm_url",   _DEFAULTS["llm_url"]).rstrip("/")
-    model = cfg.get("llm_model", _DEFAULTS["llm_model"])
+    model = cfg.get("llm_model")
+    if not model:
+        model = pick_best_model(url) or _DEFAULTS["llm_model"]
     return url, model
 
 
