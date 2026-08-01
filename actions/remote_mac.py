@@ -31,9 +31,12 @@ def _rpc(action: str, args: dict | None = None, timeout: int = 20) -> dict:
     if not url or not token:
         return {"error": "not_configured"}
     body = json.dumps({"action": action, "args": args or {}}).encode()
+    # A browser-like User-Agent — Cloudflare returns 403 for the default
+    # 'Python-urllib' agent, treating it as a bot.
     req = Request(f"{url}/rpc", data=body, method="POST", headers={
         "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"})
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Parker/1.0"})
     try:
         with urlopen(req, timeout=timeout) as r:
             return json.loads(r.read().decode("utf-8", "ignore"))
