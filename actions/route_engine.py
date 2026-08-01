@@ -39,8 +39,6 @@ def _analyze(route: dict, all_routes: list) -> str:
     if turns is not None and len(all_routes) > 1 and \
        turns == min((r.get("turns") or 1e9) for r in all_routes):
         tags.append("simplest (fewest turns)")
-    if route.get("summary") == "Google Maps":
-        tags.append("live traffic")
     return ", ".join(tags) or "alternative"
 
 
@@ -73,43 +71,16 @@ def _osrm_routes(o, d) -> list:
         return []
 
 
-def _crawl_enabled() -> bool:
-    """Google Maps crawling is opt-in (ToS-risky). Default OFF unless the config
-    sets 'gmaps_crawl': true."""
-    try:
-        from memory.config_manager import load_api_keys
-        return bool(load_api_keys().get("gmaps_crawl"))
-    except Exception:
-        return False
-
-
 def compute_routes(o: tuple, d: tuple, o_label: str, d_label: str,
                    depart_epoch: int | None = None) -> list:
-    """Compute routes and cache them. Returns the route list.
+    """Compute alternative routes (OSRM, free) and cache them.
 
-    If Google Maps crawling is enabled ('gmaps_crawl': true in config), the
-    primary route comes from Google Maps (live traffic + Google's polyline);
-    OSRM then supplies free alternative routes. Otherwise OSRM only.
+    `depart_epoch` is accepted for API compatibility but unused (OSRM has no
+    live traffic).
     """
     routes: list = []
-
-    # Google Maps crawl (opt-in) → primary route with live traffic.
-    if _crawl_enabled():
-        try:
-            from actions.gmaps_crawl import crawl_routes
-            g = crawl_routes(o_label, d_label)
-            routes.extend(g)
-        except Exception as e:
-            print(f"[Route] Google crawl failed: {e}")
-
-    # OSRM → free alternatives (and the primary route if crawl gave nothing).
     try:
-        osrm = _osrm_routes(o, d)
-        if routes:
-            # Keep Google as route 1; add OSRM ones as alternatives.
-            routes.extend(osrm[:2])
-        else:
-            routes = osrm
+        routes = _osrm_routes(o, d)
     except Exception as e:
         print(f"[Route] OSRM failed: {e}")
 

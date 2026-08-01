@@ -38,9 +38,29 @@ const ROUTE_DATA = window.ROUTE_DATA || {
 
 const COLORS = ["#ffb300", "#00d4ff", "#00ff88", "#ff6b00"];
 
+// Satellite imagery (Esri World Imagery — free, no API key) + place labels.
+const SAT_STYLE = {
+  version: 8,
+  sources: {
+    satellite: {
+      type: "raster", tileSize: 256,
+      tiles: ["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"],
+      attribution: "Esri World Imagery"
+    },
+    labels: {
+      type: "raster", tileSize: 256,
+      tiles: ["https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}"]
+    }
+  },
+  layers: [
+    { id: "sat", type: "raster", source: "satellite" },
+    { id: "labels", type: "raster", source: "labels" }
+  ]
+};
+
 const map = new maplibregl.Map({
   container: "map",
-  style: "https://demotiles.maplibre.org/style.json",
+  style: SAT_STYLE,
   center: ROUTE_DATA.routes[0].points[0].slice().reverse(),
   zoom: 8, pitch: 60, bearing: -20, antialias: true
 });
