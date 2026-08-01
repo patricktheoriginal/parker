@@ -2899,11 +2899,39 @@ class MainWindow(QMainWindow):
         """)
         lay.addWidget(self._content_display)
 
+        # ── embedded mini route map (WebEngine), hidden until a route shows ────
+        self._route_view = None
+        try:
+            from PyQt6.QtWebEngineWidgets import QWebEngineView as _WEV
+            self._route_view = _WEV()
+            self._route_view.setMinimumHeight(240)
+            self._route_view.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+            self._route_view.hide()
+            lay.addWidget(self._route_view)
+        except Exception:
+            self._route_view = None      # WebEngine not installed → browser fallback
+
         return w
 
     def _show_route_map(self, html_path: str):
-        """Slot — show a 3D route map. Uses an embedded WebEngine window if
-        available, otherwise opens the HTML in the default browser."""
+        """Slot — show the 3D route map INLINE in the content panel (mini map).
+        Falls back to the default browser only if WebEngine isn't installed."""
+        from PyQt6.QtCore import QUrl as _QUrl
+        view = getattr(self, "_route_view", None)
+        if view is not None:
+            try:
+                view.load(_QUrl.fromLocalFile(html_path))
+                view.show()
+                # Make sure the content panel is visible.
+                if hasattr(self, "_content_panel") and self._content_panel is not None:
+                    self._content_panel.show()
+                self._content_title_lbl.setText("3D ROUTE")
+                return
+            except Exception as e:
+                print(f"[UI] inline route map failed: {e}")
+
+        # Fallback: no WebEngine → separate window or browser.
         try:
             from PyQt6.QtWebEngineWidgets import QWebEngineView  # noqa: F401
             from PyQt6.QtWebEngineWidgets import QWebEngineView as _WEV

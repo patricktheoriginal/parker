@@ -32,8 +32,37 @@ from actions.weather_report import (
 _OSRM_URL = "https://router.project-osrm.org/route/v1/driving"
 _FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 _NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
+_PHOTON_URL = "https://photon.komoot.io/api/"
 # Nominatim's usage policy requires an identifying User-Agent.
 _UA = "Parker-Assistant/1.0 (Vietnam route planner)"
+
+
+def _photon_one(query: str) -> tuple[float, float, str] | None:
+    """Photon geocoder (OSM-based) — ranks landmarks/POIs and diacritic names
+    better than Nominatim, matching Google Maps more closely. Biased to Vietnam."""
+    if not query or not query.strip():
+        return None
+    q = urlencode({"q": query.strip(), "limit": 1, "lang": "en",
+                   "lat": 16.0, "lon": 106.0})   # bias toward Vietnam
+    try:
+        req = Request(f"{_PHOTON_URL}?{q}", headers={"User-Agent": _UA})
+        with urlopen(req, timeout=12) as resp:
+            data = json.load(resp)
+        feats = data.get("features", [])
+        if not feats:
+            return None
+        f = feats[0]
+        pr = f.get("properties", {})
+        if (pr.get("countrycode") or "").upper() not in ("VN", ""):
+            return None            # keep results inside Vietnam
+        lon, lat = f["geometry"]["coordinates"]
+        label = ", ".join([p for p in (
+            pr.get("name"), pr.get("street"),
+            pr.get("city") or pr.get("district") or pr.get("county"),
+            pr.get("country")) if p][:3])
+        return (float(lat), float(lon), label or query)
+    except Exception:
+        return None
 
 
 def _nominatim_one(query: str) -> tuple[float, float, str] | None:
@@ -97,6 +126,17 @@ def _geocode_place(place: str) -> tuple[float, float, str] | None:
     """
     if not place or not place.strip():
         return None
+
+    has_house_number = bool(re.match(r"^\s*\d+\S*\s+\S", place.strip()))
+
+    # For a specific street address (starts with a house number), Nominatim is
+    # usually more precise; otherwise Photon ranks landmarks/POIs/named places
+    # much better and closer to Google Maps.
+    if not has_house_number:
+        g = _photon_one(place)
+        if g:
+            return g
+
     variants = _address_variants(place)
     for i, v in enumerate(variants):
         g = _nominatim_one(v)
@@ -104,6 +144,13 @@ def _geocode_place(place: str) -> tuple[float, float, str] | None:
             return g
         if i < len(variants) - 1:
             time.sleep(1.1)   # respect Nominatim's ~1 req/sec policy
+
+    # Address with a house number that Nominatim couldn't place → let Photon try.
+    if has_house_number:
+        g = _photon_one(place)
+        if g:
+            return g
+
     # Last resort: province/city geocoder (Open-Meteo)
     return _geocode_province(place)
 
