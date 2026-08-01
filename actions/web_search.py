@@ -21,7 +21,10 @@ def _get_api_key() -> str:
 def _gemini_search(query: str) -> str:
     from google import genai
 
-    client   = genai.Client(api_key=_get_api_key())
+    # Hard timeout so a stuck grounded-search call can't hang forever
+    # (this was making news queries never return / "thinking forever").
+    client   = genai.Client(api_key=_get_api_key(),
+                            http_options={"timeout": 12000})  # ms
     response = client.models.generate_content(
         model="gemini-2.5-flash",
         contents=query,

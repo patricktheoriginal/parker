@@ -34,7 +34,7 @@ _TOPIC_ALIASES = {
 }
 
 
-def _get(url: str, timeout: int = 15) -> str:
+def _get(url: str, timeout: int = 6) -> str:
     req = urllib.request.Request(url, headers=_UA)
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return r.read().decode("utf-8", "ignore")
