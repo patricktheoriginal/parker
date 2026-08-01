@@ -40,6 +40,7 @@ from actions.open_app          import open_app
 from actions.weather_report    import weather_action, rain_forecast, where_am_i, set_my_location
 from actions.maps_route         import route_directions
 from actions.send_message      import send_message
+from actions.make_call         import make_call
 from actions.reminder          import reminder
 from actions.computer_settings import computer_settings
 from actions.screen_processor  import _capture_camera, _capture_screen
@@ -230,28 +231,53 @@ TOOL_DECLARATIONS = [
     },
     {
         "name": "send_message",
-        "description": "Sends a text message via WhatsApp, Telegram, or other messaging platform.",
+        "description": "Sends a text message via Zalo, Telegram, or another messaging app. Defaults to Zalo if no platform is given.",
         "parameters": {
             "type": "OBJECT",
             "properties": {
                 "receiver":     {"type": "STRING", "description": "Recipient contact name"},
                 "message_text": {"type": "STRING", "description": "The message to send"},
-                "platform":     {"type": "STRING", "description": "Platform: WhatsApp, Telegram, etc."}
+                "platform":     {"type": "STRING", "description": "Platform: Zalo (default), Telegram, Instagram, Signal, Discord, Messenger."}
             },
-            "required": ["receiver", "message_text", "platform"]
+            "required": ["receiver", "message_text"]
+        }
+    },
+    {
+        "name": "make_call",
+        "description": (
+            "Places a voice/phone call. Use when the user asks to call someone. "
+            "Calls a saved contact by name on Zalo, or dials a phone number directly. "
+            "Defaults to Zalo for a contact name; a bare phone number is dialed via "
+            "the default phone app."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "receiver": {"type": "STRING", "description": "Contact name to call, or a phone number to dial."},
+                "platform": {"type": "STRING", "description": "'zalo' (default, for a contact name) or 'phone' to dial a number."}
+            },
+            "required": ["receiver"]
         }
     },
     {
         "name": "reminder",
-        "description": "Sets a timed reminder using Task Scheduler.",
+        "description": (
+            "Manages timed reminders (OS notifications). "
+            "action='set' (default) schedules a reminder — needs date, time, message, "
+            "and optionally repeat='daily' or 'weekly'. "
+            "action='list' lists current reminders. "
+            "action='delete' cancels reminders matching the message text (or all if empty)."
+        ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "date":    {"type": "STRING", "description": "Date in YYYY-MM-DD format"},
-                "time":    {"type": "STRING", "description": "Time in HH:MM format (24h)"},
-                "message": {"type": "STRING", "description": "Reminder message text"}
+                "action":  {"type": "STRING", "description": "set (default) | list | delete"},
+                "date":    {"type": "STRING", "description": "Date in YYYY-MM-DD format (for set)"},
+                "time":    {"type": "STRING", "description": "Time in HH:MM format 24h (for set)"},
+                "message": {"type": "STRING", "description": "Reminder text (for set); or text to match when deleting"},
+                "repeat":  {"type": "STRING", "description": "Optional: 'daily' or 'weekly' for a repeating reminder"}
             },
-            "required": ["date", "time", "message"]
+            "required": []
         }
     },
     {
@@ -833,6 +859,10 @@ class ParkerLive:
             elif name == "send_message":
                 r = await loop.run_in_executor(None, lambda: send_message(parameters=args, response=None, player=self.ui, session_memory=None))
                 result = r or f"Message sent to {args.get('receiver')}."
+
+            elif name == "make_call":
+                r = await loop.run_in_executor(None, lambda: make_call(parameters=args, response=None, player=self.ui))
+                result = r or f"Calling {args.get('receiver')}."
 
             elif name == "reminder":
                 r = await loop.run_in_executor(None, lambda: reminder(parameters=args, response=None, player=self.ui))

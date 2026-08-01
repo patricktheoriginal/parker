@@ -149,8 +149,8 @@ def _desktop_send(app_name: str, receiver: str, message: str) -> str:
     time.sleep(0.3)
     return f"Message sent to {receiver} via {app_name}."
 
-def _send_whatsapp(receiver: str, message: str) -> str:
-    return _desktop_send("WhatsApp", receiver, message)
+def _send_zalo(receiver: str, message: str) -> str:
+    return _desktop_send("Zalo", receiver, message)
 
 def _send_telegram(receiver: str, message: str) -> str:
     return _desktop_send("Telegram", receiver, message)
@@ -213,7 +213,7 @@ def _send_messenger(receiver: str, message: str) -> str:
     return f"Message sent to {receiver} via Messenger."
 
 _PLATFORM_MAP = [
-    ({"whatsapp", "wp", "wapp"},              _send_whatsapp),
+    ({"zalo"},                                 _send_zalo),
     ({"telegram", "tg"},                      _send_telegram),
     ({"instagram", "ig", "insta"},            _send_instagram),
     ({"signal"},                               _send_signal),
@@ -239,7 +239,7 @@ def send_message(
     params       = parameters or {}
     receiver     = params.get("receiver", "").strip()
     message_text = params.get("message_text", "").strip()
-    platform     = params.get("platform", "whatsapp").strip()
+    platform     = params.get("platform", "zalo").strip()
 
     if not receiver:
         return "Please specify a recipient."
