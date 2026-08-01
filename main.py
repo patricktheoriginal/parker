@@ -651,6 +651,7 @@ class ParkerLive:
         self.ui             = ui
         self._asst_name     = "Parker"   # updated each session from config
         self._offline_history: list = []   # conversation memory for offline mode
+        self._offline_voice = None         # OfflineVoice loop, active only offline
         self.session              = None
         self.audio_in_queue       = None
         self.out_queue            = None
@@ -701,6 +702,41 @@ class ParkerLive:
             return
         # Offline (no Gemini session): fall back to the local Ollama agent.
         self._handle_offline_text(text)
+
+    def _start_offline_voice(self) -> None:
+        """Start the offline voice loop (mic→Whisper→Ollama→TTS) if possible."""
+        if self._offline_voice is not None and self._offline_voice.is_running():
+            return
+        try:
+            from core.offline_agent import offline_available, offline_respond
+            from core.offline_voice import OfflineVoice
+        except Exception as e:
+            print(f"[Offline] voice not available: {e}")
+            return
+        if not offline_available():
+            return
+
+        def _respond(text, history):
+            reply = offline_respond(text, history=history)
+            # keep the shared text history in sync so both paths remember
+            return reply
+
+        self._offline_voice = OfflineVoice(
+            respond_fn=_respond,
+            on_state=lambda s: self.ui.set_state(s),
+            on_log=lambda m: self.ui.write_log(m if ":" in m else f"SYS: {m}"),
+            whisper_model="base",
+        )
+        self._offline_voice.start()
+        self.ui.write_log("SYS: OFFLINE VOICE active — speak to Parker (local model).")
+
+    def _stop_offline_voice(self) -> None:
+        if self._offline_voice is not None:
+            try:
+                self._offline_voice.stop()
+            except Exception:
+                pass
+            self._offline_voice = None
 
     def _handle_offline_text(self, text: str) -> None:
         """Answer a typed command with the local offline model, in a thread."""
@@ -1590,6 +1626,7 @@ class ParkerLive:
                     self._interrupted          = False
 
                     print("[PARKER] Connected.")
+                    self._stop_offline_voice()      # cloud is back — hand mic to Gemini
                     self.ui.set_state("LISTENING")
                     self.ui.write_log("SYS: Parker online.")
 
@@ -1646,14 +1683,16 @@ class ParkerLive:
                     self._conn_backoff = _conn_backoff
                     self.ui.write_log(
                         f"NET: Can't reach Gemini — retrying in {_conn_backoff}s.")
-                    # Offer offline mode: if a local model is available, the user
-                    # can keep working by TYPING commands while we're offline.
+                    # Offline fallback: if a local model is available, start the
+                    # offline VOICE loop so the user can keep talking to Parker,
+                    # and typed commands also route to the local model.
                     try:
                         from core.offline_agent import offline_available
                         if offline_available():
                             self.ui.write_log(
-                                "SYS: OFFLINE MODE ready — type a command to use the "
-                                "local model (voice needs the cloud).")
+                                "SYS: OFFLINE MODE ready — local model in use "
+                                "(cloud features like weather/news still need internet).")
+                            self._start_offline_voice()
                     except Exception:
                         pass
                 else:

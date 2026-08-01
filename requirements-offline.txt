@@ -1,0 +1,10 @@
+# Offline mode dependencies for Parker.
+# Install with:  pip install -r requirements-offline.txt
+# Also install Ollama (https://ollama.com) and pull a model:
+#     ollama pull llama3.2:3b
+#
+# faster-whisper downloads a small speech model (~75 MB for 'base') on first
+# use, then runs fully offline. pyttsx3 uses the built-in OS voice (no download).
+
+faster-whisper
+pyttsx3
