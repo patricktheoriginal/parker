@@ -271,25 +271,114 @@ def _play_liked_via_api(shuffle: bool = True) -> str | None:
     return f"Playing your Liked Songs on Spotify ({len(uris)} tracks, shuffled)."
 
 
-def _play_liked_via_ui() -> str:
-    """Fallback: open Spotify and navigate to Liked Songs, then play."""
+def _open_spotify_uri(uri: str) -> bool:
+    """Open a spotify: URI so the desktop app navigates straight to it. This is
+    the reliable way to reach Liked Songs on a Free account (no shortcut for it).
+    Returns True if we issued the open command."""
+    import platform as _pf
+    system = _pf.system()
+    try:
+        if system == "Windows":
+            _subprocess_run(f'start "" "{uri}"', shell=True)
+        elif system == "Darwin":
+            _subprocess_run(["open", uri])
+        else:
+            _subprocess_run(["xdg-open", uri])
+        return True
+    except Exception as e:
+        print(f"[Spotify] open URI failed: {e}")
+        return False
+
+
+def _subprocess_run(cmd, shell=False):
+    import subprocess
+    subprocess.Popen(cmd, shell=shell,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def _play_liked_via_ui(shuffle: bool = True) -> str:
+    """Free-account path: open Liked Songs via its spotify: URI, then press the
+    Play button. Works without Premium since it drives the desktop app."""
     try:
         import pyautogui
     except Exception:
-        return "Sir, I can't control Spotify without pyautogui installed."
+        return ("Sir, I can't control Spotify without pyautogui installed "
+                "(pip install pyautogui).")
     try:
+        # Make sure the app is running, then navigate to Liked Songs by URI.
         from actions.open_app import open_app
         open_app(parameters={"app_name": "Spotify"})
-        time.sleep(3.0)
-        # Ctrl+Shift+K jumps to the Liked Songs page in the desktop app.
-        pyautogui.hotkey("ctrl", "shift", "k")
-        time.sleep(1.5)
-        pyautogui.press("enter")           # play the list
-        return ("I opened your Liked Songs on Spotify and started playback. "
-                "If it didn't play, press Play — or set up the Spotify API for "
-                "reliable control.")
+        time.sleep(2.0)
+        if not _open_spotify_uri("spotify:collection:tracks"):
+            return "Sir, I couldn't open your Liked Songs."
+        time.sleep(3.5)                    # let the page load
+
+        # Bring Spotify to the foreground so keystrokes land on it.
+        _focus_spotify()
+        time.sleep(0.5)
+
+        if shuffle:
+            # Ctrl+S toggles shuffle in the desktop app. (Best-effort — if it
+            # was already on this turns it off, but most users leave it on.)
+            try:
+                pyautogui.hotkey("ctrl", "s")
+                time.sleep(0.3)
+            except Exception:
+                pass
+
+        # Play the list: Tab into the track list, then Enter on the first row.
+        # Enter on a focused track starts playback of the whole list from there.
+        pyautogui.press("tab")
+        time.sleep(0.4)
+        pyautogui.press("enter")
+        time.sleep(0.6)
+        # Fallback: Spotify's global "play/pause" is Space when a context is
+        # loaded but nothing is playing yet.
+        pyautogui.press("space")
+
+        return ("I opened your Liked Songs and started playback. If it didn't "
+                "start, just press the green Play button — some Spotify builds "
+                "block simulated keys on the very first play.")
     except Exception as e:
         return f"Sir, I couldn't control Spotify: {e}"
+
+
+def _focus_spotify() -> None:
+    """Best-effort: bring the Spotify window to the foreground (Windows)."""
+    import platform as _pf
+    if _pf.system() != "Windows":
+        return
+    try:
+        import subprocess
+        # Use PowerShell to activate the Spotify window.
+        ps = ('$p=Get-Process Spotify -ErrorAction SilentlyContinue | '
+              'Where-Object {$_.MainWindowTitle} | Select-Object -First 1; '
+              'if($p){ (New-Object -ComObject WScript.Shell).AppActivate('
+              '$p.Id) }')
+        subprocess.Popen(["powershell", "-NoProfile", "-Command", ps],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+
+def play_favorites(parameters: dict = None, player=None, session_memory=None) -> str:
+    """Play the user's Liked Songs (favorites) on Spotify, shuffled.
+
+    Playback control via the Web API needs Premium, so we try it first but fall
+    back to driving the desktop app (which works on Free accounts)."""
+    msg = _play_liked_via_api(shuffle=True)
+    # None → API not configured. A 403/Premium message → API can't control a
+    # Free account. In both cases, drive the desktop app instead.
+    if msg is None or "Premium" in (msg or ""):
+        msg = _play_liked_via_ui(shuffle=True)
+
+    print(f"[Spotify] {msg}")
+    if player:
+        try:
+            player.write_log(f"[spotify] {msg}")
+        except Exception:
+            pass
+    return msg
 
 
 def play_favorites(parameters: dict = None, player=None, session_memory=None) -> str:
@@ -489,10 +578,40 @@ def play_playlist(parameters: dict = None, player=None, session_memory=None) -> 
                 f"Ask me to list your playlists first.")
 
     err = _play_context(token, pl["uri"])
-    msg = err if err else f"Playing your playlist '{pl['name']}' on Spotify."
+    if err and "Premium" in err:
+        # Free account: open the playlist by URI in the app and press play.
+        msg = _play_playlist_via_ui(pl)
+    else:
+        msg = err if err else f"Playing your playlist '{pl['name']}' on Spotify."
     print(f"[Spotify] {msg}")
     _log(player, f"[spotify] {msg}")
     return msg
+
+
+def _play_playlist_via_ui(pl: dict) -> str:
+    """Free-account path: open a playlist by its spotify: URI and press play."""
+    try:
+        import pyautogui
+    except Exception:
+        return "Sir, I can't control Spotify without pyautogui installed."
+    try:
+        from actions.open_app import open_app
+        open_app(parameters={"app_name": "Spotify"})
+        time.sleep(2.0)
+        if not _open_spotify_uri(pl["uri"]):
+            return f"Sir, I couldn't open the playlist '{pl['name']}'."
+        time.sleep(3.5)
+        _focus_spotify()
+        time.sleep(0.5)
+        pyautogui.press("tab")
+        time.sleep(0.4)
+        pyautogui.press("enter")
+        time.sleep(0.6)
+        pyautogui.press("space")
+        return (f"I opened your playlist '{pl['name']}' and started playback. "
+                f"If it didn't start, press the green Play button.")
+    except Exception as e:
+        return f"Sir, I couldn't control Spotify: {e}"
 
 
 def _log(player, msg: str):
@@ -512,7 +631,8 @@ def play_spotify(parameters: dict, player=None, session_memory=None) -> str:
         return "Sir, what song should I play?"
 
     msg = _play_via_api(query)
-    if msg is None:                        # API not configured → UI fallback
+    # None → API not configured; "Premium" → Free account can't use API control.
+    if msg is None or "Premium" in (msg or ""):
         msg = _play_via_ui(query)
 
     print(f"[Spotify] {msg}")
