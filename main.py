@@ -652,6 +652,8 @@ class ParkerLive:
         self._asst_name     = "Parker"   # updated each session from config
         self._offline_history: list = []   # conversation memory for offline mode
         self._offline_voice = None         # OfflineVoice loop, active only offline
+        self._announced_offline = False    # spoke the "offline mode" notice once
+        self._was_online = False           # True once a cloud session has connected
         self.session              = None
         self.audio_in_queue       = None
         self.out_queue            = None
@@ -1627,6 +1629,10 @@ class ParkerLive:
 
                     print("[PARKER] Connected.")
                     self._stop_offline_voice()      # cloud is back — hand mic to Gemini
+                    # Reset the offline-announcement latch so the next disconnect
+                    # announces again.
+                    self._announced_offline = False
+                    self._was_online = True
                     self.ui.set_state("LISTENING")
                     self.ui.write_log("SYS: Parker online.")
 
@@ -1692,7 +1698,19 @@ class ParkerLive:
                             self.ui.write_log(
                                 "SYS: OFFLINE MODE ready — local model in use "
                                 "(cloud features like weather/news still need internet).")
+                            # Announce the switch by voice, but only the first
+                            # time we drop offline (not on every retry).
+                            first_drop = not self._announced_offline
                             self._start_offline_voice()
+                            if first_drop and self._offline_voice is not None:
+                                self._announced_offline = True
+                                if self._was_online:
+                                    notice = ("Connection lost. Switching to offline mode, sir. "
+                                              "I'll keep helping with the local model.")
+                                else:
+                                    notice = ("No internet connection. Starting in offline mode, sir. "
+                                              "I'll use the local model.")
+                                await asyncio.to_thread(self._offline_voice.announce, notice)
                     except Exception:
                         pass
                 else:

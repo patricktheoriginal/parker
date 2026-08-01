@@ -154,6 +154,21 @@ class OfflineVoice:
         self._min_speech_ms = 300       # ignore blips shorter than this
         self._energy_thresh = 0.010     # RMS threshold for "speech" (auto-calibrated)
 
+    def announce(self, text: str) -> None:
+        """Speak a one-off line (e.g. 'switching to offline mode') with the
+        offline TTS, muting the mic while it plays."""
+        was_speaking = self._speaking
+        self._speaking = True
+        try:
+            self._on_state("SPEAKING")
+            self._tts.speak(text)
+        except Exception as e:
+            print(f"[OfflineVoice] announce failed: {e}")
+        finally:
+            self._speaking = was_speaking
+            if self._running:
+                self._on_state("LISTENING")
+
     # ── lifecycle ────────────────────────────────────────────────────────────
     def start(self):
         if self._running:
