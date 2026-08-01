@@ -189,13 +189,14 @@ TOOL_DECLARATIONS = [
             "depart/arrive time, and the weather along the route. Use this whenever "
             "the user asks how to get somewhere, the route/directions to a place, "
             "how far or how long a drive is, or the best time to leave. "
+            "Works with cities, provinces, landmarks, AND specific street addresses. "
             "If the user does not give a starting point, leave 'origin' empty."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "destination": {"type": "STRING", "description": "Destination place in Vietnam (city, province, or landmark)."},
-                "origin":      {"type": "STRING", "description": "Starting place in Vietnam. Leave empty if the user did not specify one."},
+                "destination": {"type": "STRING", "description": "Destination in Vietnam — a city, province, landmark, or a specific street address (e.g. '208 Nguyen Huu Canh, Binh Thanh, Ho Chi Minh City'). Pass the full address exactly as the user said it."},
+                "origin":      {"type": "STRING", "description": "Starting place or full address in Vietnam. Leave empty if the user did not specify one."},
                 "depart_time": {"type": "STRING", "description": "Desired departure time, e.g. '7am', '15:30', or 'now'. Default is now."}
             },
             "required": ["destination"]

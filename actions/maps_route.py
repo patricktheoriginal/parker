@@ -16,6 +16,8 @@ No API keys required.
 
 import json
 import math
+import re
+import time
 import webbrowser
 from datetime import datetime, timedelta
 from urllib.parse import quote_plus, urlencode
@@ -31,17 +33,12 @@ _NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 _UA = "Parker-Assistant/1.0 (Vietnam route planner)"
 
 
-def _geocode_place(place: str) -> tuple[float, float, str] | None:
-    """Resolve any Vietnam place — including landmarks, airports, markets,
-    districts, and Vietnamese-with-diacritics names — to (lat, lon, label).
-
-    Uses Nominatim (OpenStreetMap), which knows points of interest, and falls
-    back to the province-level geocoder if Nominatim finds nothing.
-    """
-    if not place or not place.strip():
+def _nominatim_one(query: str) -> tuple[float, float, str] | None:
+    """Single Nominatim lookup restricted to Vietnam."""
+    if not query or not query.strip():
         return None
     q = urlencode({
-        "q": place.strip(), "format": "json", "limit": 1,
+        "q": query.strip(), "format": "json", "limit": 1,
         "countrycodes": "vn", "accept-language": "en", "addressdetails": 0,
     })
     try:
@@ -50,14 +47,61 @@ def _geocode_place(place: str) -> tuple[float, float, str] | None:
             data = json.load(resp)
         if data:
             top = data[0]
-            name = top.get("display_name", place)
-            # Keep the label short and clean: first 2-3 non-empty comma parts
+            name = top.get("display_name", query)
             parts = [p.strip() for p in name.split(",") if p.strip()]
             short = ", ".join(parts[:3])
-            return (float(top["lat"]), float(top["lon"]), short or place)
+            return (float(top["lat"]), float(top["lon"]), short or query)
     except Exception:
         pass
-    # Fallback: province/city geocoder (Open-Meteo)
+    return None
+
+
+def _address_variants(place: str) -> list[str]:
+    """Progressively simpler forms of an address so a too-specific street
+    number that OSM doesn't have still resolves to the street / ward / city.
+
+    e.g. "2 Hai Trieu, Ben Nghe, District 1, HCMC" ->
+         [full, "Hai Trieu, Ben Nghe, District 1, HCMC",
+          "Ben Nghe, District 1, HCMC", "District 1, HCMC", "HCMC"]
+    """
+    place = place.strip()
+    variants = [place]
+    parts = [p.strip() for p in place.split(",") if p.strip()]
+    # Drop a leading house number token (e.g. "2 Hai Trieu" -> "Hai Trieu")
+    if parts and re.match(r"^\d+\S*\s+\S", parts[0]):
+        stripped = re.sub(r"^\d+\S*\s*", "", parts[0]).strip()
+        variants.append(", ".join([stripped] + parts[1:]))
+    # Drop leading comma-parts one at a time (street -> ward -> district -> city)
+    for i in range(1, len(parts)):
+        variants.append(", ".join(parts[i:]))
+    # De-dupe while preserving order
+    seen, out = set(), []
+    for v in variants:
+        if v and v not in seen:
+            seen.add(v)
+            out.append(v)
+    return out
+
+
+def _geocode_place(place: str) -> tuple[float, float, str] | None:
+    """Resolve any Vietnam place — landmarks, airports, markets, districts,
+    diacritic names, AND specific street addresses — to (lat, lon, label).
+
+    Tries the full address first, then progressively simpler forms (dropping the
+    house number, then leading address parts) so a precise address that OSM lacks
+    still snaps to the right street/ward/city. Falls back to the province
+    geocoder as a last resort.
+    """
+    if not place or not place.strip():
+        return None
+    variants = _address_variants(place)
+    for i, v in enumerate(variants):
+        g = _nominatim_one(v)
+        if g:
+            return g
+        if i < len(variants) - 1:
+            time.sleep(1.1)   # respect Nominatim's ~1 req/sec policy
+    # Last resort: province/city geocoder (Open-Meteo)
     return _geocode_province(place)
 
 
@@ -136,6 +180,53 @@ def _sample_points(coords: list, n: int = 3) -> list:
     return [coords[i] for i in idxs]
 
 
+def _maps_endpoint(text: str, geo) -> str:
+    """Prefer exact coordinates; fall back to the raw place text for Maps."""
+    if geo:
+        return f"{geo[0]},{geo[1]}"
+    t = text.strip()
+    # Bias plain addresses toward Vietnam if country isn't already present
+    if "vietnam" not in t.lower() and "viet nam" not in t.lower():
+        t = f"{t}, Vietnam"
+    return t
+
+
+def _open_maps_by_text(origin: str, dest: str, o, d, player) -> str:
+    """Open Google Maps directions using text for any endpoint we couldn't
+    geocode. Google Maps resolves specific addresses reliably even when the
+    free geocoder can't, so the user still gets their route."""
+    gmaps = ("https://www.google.com/maps/dir/?api=1"
+             f"&origin={quote_plus(_maps_endpoint(origin, o))}"
+             f"&destination={quote_plus(_maps_endpoint(dest, d))}"
+             "&travelmode=driving")
+    opened = False
+    try:
+        opened = webbrowser.open(gmaps)
+    except Exception:
+        opened = False
+
+    o_name = o[2] if o else origin
+    d_name = d[2] if d else dest
+    if opened:
+        msg = (f"I've opened driving directions from {o_name} to {d_name} on "
+               f"Google Maps. I couldn't compute the exact drive time and "
+               f"along-route weather for that specific address, but Maps will "
+               f"show the fastest route and timing.")
+    else:
+        msg = f"Open directions here: {gmaps}"
+    _log(msg, player)
+    if player is not None:
+        try:
+            player.show_content(
+                "Route",
+                f"ROUTE — {o_name} → {d_name}\n\n"
+                f"(Opened on Google Maps for a specific address.)\n\n{gmaps}",
+            )
+        except Exception:
+            pass
+    return msg
+
+
 def route_directions(parameters: dict, player=None, session_memory=None) -> str:
     """Plan a Vietnam driving route with timing and along-the-route weather,
     then open it on Google Maps."""
@@ -152,17 +243,14 @@ def route_directions(parameters: dict, player=None, session_memory=None) -> str:
         origin = "Hanoi"
 
     o = _geocode_place(origin)
-    import time as _t
-    _t.sleep(1.1)   # Nominatim usage policy: ~1 request/second
+    time.sleep(1.1)   # Nominatim usage policy: ~1 request/second
     d = _geocode_place(dest)
-    if not o:
-        msg = f"Sir, I couldn't locate the origin '{origin}'."
-        _log(msg, player)
-        return msg
-    if not d:
-        msg = f"Sir, I couldn't locate the destination '{dest}'."
-        _log(msg, player)
-        return msg
+
+    # If we couldn't pin exact coordinates (e.g. a very specific address OSM
+    # doesn't have), still open Google Maps using the raw text — Google resolves
+    # addresses well — instead of failing with "unable to find".
+    if not o or not d:
+        return _open_maps_by_text(origin, dest, o, d, player)
 
     o_lat, o_lon, o_label = o
     d_lat, d_lon, d_label = d
