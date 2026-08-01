@@ -24,29 +24,97 @@ _FRAME_MS   = 30
 _FRAME      = SAMPLE_RATE * _FRAME_MS // 1000     # samples per frame
 
 
+import os
+from pathlib import Path
+
+# A natural male neural voice (Piper) that's closer to the online 'Charon' feel.
+_PIPER_VOICE = os.environ.get("PARKER_PIPER_VOICE", "en_US-ryan-medium")
+_PIPER_DIR = Path.home() / ".parker" / "piper"
+
+
 class _TTS:
-    """Offline text-to-speech using pyttsx3 (OS voice). One utterance at a time."""
+    """Offline text-to-speech.
+
+    Prefers Piper (neural, natural male voice — the closest offline match to the
+    online Charon voice). Falls back to pyttsx3 (OS voice) if Piper or its voice
+    model isn't available.
+    """
 
     def __init__(self):
-        self._engine = None
         self._lock = threading.Lock()
+        self._piper = None          # PiperVoice, or False if unavailable
+        self._engine = None         # pyttsx3 fallback
 
-    def _ensure(self):
+    # ── Piper (preferred) ────────────────────────────────────────────────────
+    def _load_piper(self):
+        if self._piper is not None:
+            return self._piper
+        try:
+            from piper import PiperVoice
+            onnx = _PIPER_DIR / f"{_PIPER_VOICE}.onnx"
+            if not onnx.exists():
+                self._piper = False
+                return False
+            self._piper = PiperVoice.load(str(onnx))
+            return self._piper
+        except Exception as e:
+            print(f"[OfflineVoice] Piper unavailable ({e}); using OS voice.")
+            self._piper = False
+            return False
+
+    def _speak_piper(self, text: str) -> bool:
+        voice = self._load_piper()
+        if not voice:
+            return False
+        try:
+            import io, wave
+            import numpy as _np
+            import sounddevice as _sd
+            buf = io.BytesIO()
+            with wave.open(buf, "wb") as wf:
+                voice.synthesize_wav(text, wf)
+            buf.seek(0)
+            with wave.open(buf, "rb") as wf:
+                sr = wf.getframerate()
+                frames = wf.readframes(wf.getnframes())
+            audio = _np.frombuffer(frames, dtype=_np.int16)
+            _sd.play(audio, sr)
+            _sd.wait()
+            return True
+        except Exception as e:
+            print(f"[OfflineVoice] Piper playback failed ({e}); using OS voice.")
+            return False
+
+    # ── pyttsx3 (fallback) ───────────────────────────────────────────────────
+    def _ensure_engine(self):
         if self._engine is None:
             import pyttsx3
             self._engine = pyttsx3.init()
-            self._engine.setProperty("rate", 185)
+            self._engine.setProperty("rate", 178)
+            # Prefer a male voice if the OS offers one.
+            try:
+                for v in self._engine.getProperty("voices"):
+                    if "male" in (getattr(v, "gender", "") or "").lower() or \
+                       any(k in v.name.lower() for k in ("david", "mark", "james", "male")):
+                        self._engine.setProperty("voice", v.id)
+                        break
+            except Exception:
+                pass
+
+    def _speak_pyttsx3(self, text: str):
+        try:
+            self._ensure_engine()
+            self._engine.say(text)
+            self._engine.runAndWait()
+        except Exception as e:
+            print(f"[OfflineVoice] TTS error: {e}")
 
     def speak(self, text: str):
         if not text or not text.strip():
             return
         with self._lock:
-            try:
-                self._ensure()
-                self._engine.say(text)
-                self._engine.runAndWait()
-            except Exception as e:
-                print(f"[OfflineVoice] TTS error: {e}")
+            if not self._speak_piper(text):
+                self._speak_pyttsx3(text)
 
 
 class OfflineVoice:

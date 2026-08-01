@@ -30,15 +30,37 @@ def main() -> None:
         import pyttsx3  # noqa: F401
     except Exception:
         missing.append("pyttsx3")
+    have_piper = True
+    try:
+        import piper  # noqa: F401
+    except Exception:
+        have_piper = False
     if missing:
         print("Missing packages:", ", ".join(missing))
         print("Install them with:\n    pip install -r requirements-offline.txt\n")
         return
-    print("[1/3] faster-whisper and pyttsx3 installed ✓")
+    print("[1/4] faster-whisper and pyttsx3 installed ✓"
+          + ("" if have_piper else "  (piper-tts not installed — will use OS voice)"))
+
+    # 1b. Piper neural voice (natural male voice, closer to online Charon)
+    if have_piper:
+        print("[2/4] Downloading Piper voice 'en_US-ryan-medium' (one-time)…")
+        try:
+            from pathlib import Path as _P
+            from piper.download_voices import download_voice
+            d = _P.home() / ".parker" / "piper"
+            d.mkdir(parents=True, exist_ok=True)
+            if not (d / "en_US-ryan-medium.onnx").exists():
+                download_voice("en_US-ryan-medium", d)
+            print("      Piper voice cached ✓  (natural offline voice ready)")
+        except Exception as e:
+            print(f"      Piper voice download failed ({e}); offline will use the OS voice.")
+    else:
+        print("[2/4] Piper not installed — offline will use the OS voice (pyttsx3).")
 
     # 2. Whisper model
     model = sys.argv[1] if len(sys.argv) > 1 else "base"
-    print(f"[2/3] Downloading Whisper '{model}' speech model (one-time)…")
+    print(f"[3/4] Downloading Whisper '{model}' speech model (one-time)…")
     try:
         from faster_whisper import WhisperModel
         WhisperModel(model)
@@ -49,7 +71,7 @@ def main() -> None:
         return
 
     # 3. Ollama + model
-    print("[3/3] Checking the local language model (Ollama)…")
+    print("[4/4] Checking the local language model (Ollama)…")
     try:
         from core.llm_client import ensure_ollama_running, list_ollama_models, pick_best_model
         if not ensure_ollama_running():
