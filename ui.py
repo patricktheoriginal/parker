@@ -1783,7 +1783,7 @@ class MainWindow(QMainWindow):
     _cam_stream_sig = pyqtSignal(bool)       # True=start live stream, False=stop
     _cam_frame_sig  = pyqtSignal(bytes)      # live camera frame → HUD area
     _clipboard_sig  = pyqtSignal(str)        # clipboard text changed (thread-safe)
-    _routemap_sig   = pyqtSignal(str)        # path to a route map HTML → show it
+    _routemap_sig   = pyqtSignal(str)        # route map HTML string → show inline
 
     def __init__(self, face_path: str):
         super().__init__()
@@ -2914,16 +2914,19 @@ class MainWindow(QMainWindow):
 
         return w
 
-    def _show_route_map(self, html_path: str):
-        """Slot — show the 3D route map INLINE in the content panel (mini map).
-        Falls back to the default browser only if WebEngine isn't installed."""
+    def _show_route_map(self, html: str):
+        """Slot — show the 3D route map INLINE in the content panel from an HTML
+        string via setHtml (no temp file). Falls back to a browser only if
+        WebEngine isn't installed."""
         from PyQt6.QtCore import QUrl as _QUrl
+        # A base URL is needed so the CDN (MapLibre) and remote tiles load.
+        base = _QUrl("https://parker.local/")
+
         view = getattr(self, "_route_view", None)
         if view is not None:
             try:
-                view.load(_QUrl.fromLocalFile(html_path))
+                view.setHtml(html, base)
                 view.show()
-                # Make sure the content panel is visible.
                 if hasattr(self, "_content_panel") and self._content_panel is not None:
                     self._content_panel.show()
                 self._content_title_lbl.setText("3D ROUTE")
@@ -2931,27 +2934,26 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 print(f"[UI] inline route map failed: {e}")
 
-        # Fallback: no WebEngine → separate window or browser.
+        # Fallback: no inline view → separate WebEngine window.
         try:
-            from PyQt6.QtWebEngineWidgets import QWebEngineView  # noqa: F401
             from PyQt6.QtWebEngineWidgets import QWebEngineView as _WEV
-            from PyQt6.QtCore import QUrl as _QUrl
             if self._route_win is None:
                 self._route_win = _WEV()
                 self._route_win.setWindowTitle("Parker — 3D Route")
                 self._route_win.resize(900, 640)
-            self._route_win.load(_QUrl.fromLocalFile(html_path))
+            self._route_win.setHtml(html, base)
             self._route_win.show()
             self._route_win.raise_()
         except Exception:
-            # WebEngine not installed → open in the external browser.
-            # Use as_uri() so the file:// path is valid on Windows (backslashes).
-            import webbrowser
+            # No WebEngine at all → write once to a temp file and open the browser.
+            import webbrowser, tempfile
             from pathlib import Path as _Path
             try:
-                webbrowser.open(_Path(html_path).as_uri())
-            except Exception:
-                webbrowser.open(html_path)
+                p = _Path(tempfile.gettempdir()) / "parker_route_map.html"
+                p.write_text(html, encoding="utf-8")
+                webbrowser.open(p.as_uri())
+            except Exception as e:
+                print(f"[UI] route map browser fallback failed: {e}")
 
     def _show_content(self, title: str, text: str):
         """Slot — runs on Qt main thread. Updates and shows the content panel."""
@@ -3413,9 +3415,9 @@ class ParkerUI:
         """Thread-safe: display content in the panel below the HUD."""
         self._win._content_sig.emit(title[:48], text[:4000])
 
-    def show_route_map(self, html_path: str):
-        """Thread-safe: show a 3D route map (embedded WebEngine or browser)."""
-        self._win._routemap_sig.emit(html_path)
+    def show_route_map(self, html: str):
+        """Thread-safe: show a 3D route map from an HTML string (inline)."""
+        self._win._routemap_sig.emit(html)
 
     def prompt_reconfig(self):
         """Thread-safe: show the API key setup overlay (e.g. after an auth error)."""

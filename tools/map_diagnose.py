@@ -30,14 +30,16 @@ def main() -> None:
     # 2. Build a sample map from a real route.
     print("\n[2] Building a sample route map…")
     try:
-        import memory.config_manager as cm
-        from actions.route_engine import compute_routes, render_map
+        import tempfile
+        from actions.route_engine import compute_routes, build_map_html
         routes = compute_routes((21.0245, 105.8412), (20.2581, 105.9797),
                                 "Hanoi", "Ninh Binh")
         if not routes:
             print("    Could not compute a route (no internet, or OSRM down).")
             return
-        path = render_map(player=None)
+        html = build_map_html()
+        path = Path(tempfile.gettempdir()) / "parker_route_map.html"
+        path.write_text(html, encoding="utf-8")
         print(f"    Map written to: {path}")
     except Exception as e:
         print(f"    Failed to build the map: {e}")
@@ -47,7 +49,7 @@ def main() -> None:
     print("\n[3] Opening the map in your browser to verify it renders…")
     try:
         import webbrowser
-        webbrowser.open(Path(path).as_uri())
+        webbrowser.open(path.as_uri())
         print("    Opened. If you see a map with a route line, the map works.")
     except Exception as e:
         print(f"    Could not open: {e}")

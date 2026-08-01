@@ -103,16 +103,12 @@ def select_next() -> int:
     return _LAST["selected"]
 
 
-def render_map(player=None) -> str | None:
-    """Write the cached routes into the 3D map HTML and ask the UI to show it.
-
-    Returns the temp HTML path, or None if there are no routes.
-    """
+def build_map_html() -> str | None:
+    """Return the full 3D map HTML for the cached routes (with data injected),
+    as a string — no file needed. Returns None if there are no routes."""
     routes = _LAST["routes"]
     if not routes:
         return None
-    import os
-    import tempfile
     from pathlib import Path
 
     template = (Path(__file__).resolve().parent.parent
@@ -134,16 +130,23 @@ def render_map(player=None) -> str | None:
         ],
     }
     inject = f"<script>window.ROUTE_DATA = {json.dumps(data)};</script>"
-    html = html.replace("<head>", "<head>\n" + inject, 1)
+    return html.replace("<head>", "<head>\n" + inject, 1)
 
-    out = Path(tempfile.gettempdir()) / "parker_route_map.html"
-    out.write_text(html, encoding="utf-8")
+
+def render_map(player=None) -> str | None:
+    """Build the 3D map HTML and hand it straight to the UI (no temp file).
+
+    Returns the HTML string, or None if there are no routes.
+    """
+    html = build_map_html()
+    if html is None:
+        return None
     if player is not None:
         try:
-            player.show_route_map(str(out))
+            player.show_route_map(html)      # HTML string, shown via setHtml
         except Exception as e:
             print(f"[Route] could not show map: {e}")
-    return str(out)
+    return html
 
 
 def describe(routes: list, selected: int = 0) -> str:
