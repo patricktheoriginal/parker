@@ -40,6 +40,10 @@ from actions.open_app          import open_app
 from actions.weather_report    import weather_action, rain_forecast, where_am_i, set_my_location
 from actions.maps_route         import route_directions, different_route, analyze_route
 from actions.nearby             import find_nearby, place_info
+from actions.utilities          import (
+    currency_convert, air_quality, wiki_lookup, crypto_price,
+    unit_convert, calculate, lunar_date, day_briefing,
+)
 from actions.send_message      import send_message
 from actions.make_call         import make_call
 from actions.reminder          import reminder
@@ -197,6 +201,64 @@ TOOL_DECLARATIONS = [
             },
             "required": []
         }
+    },
+    {
+        "name": "currency_convert",
+        "description": "Converts money between currencies (e.g. USD to VND). Use for exchange rates.",
+        "parameters": {"type": "OBJECT", "properties": {
+            "amount": {"type": "NUMBER", "description": "Amount to convert (default 1)."},
+            "from":   {"type": "STRING", "description": "Source currency code, e.g. USD."},
+            "to":     {"type": "STRING", "description": "Target currency code, e.g. VND."}
+        }, "required": ["from", "to"]},
+    },
+    {
+        "name": "air_quality",
+        "description": "Air quality (AQI, PM2.5) for a Vietnamese city, or the user's location if none given. Use when asked about pollution, air, or AQI.",
+        "parameters": {"type": "OBJECT", "properties": {
+            "city": {"type": "STRING", "description": "City name; defaults to current location."}
+        }, "required": []},
+    },
+    {
+        "name": "wiki_lookup",
+        "description": "Looks up a short summary of a topic from Wikipedia. Use for 'what is X', 'who is X', general knowledge.",
+        "parameters": {"type": "OBJECT", "properties": {
+            "topic": {"type": "STRING", "description": "The topic/person/thing to look up."}
+        }, "required": ["topic"]},
+    },
+    {
+        "name": "crypto_price",
+        "description": "Current price of a cryptocurrency in USD and VND (Bitcoin, Ethereum, etc.).",
+        "parameters": {"type": "OBJECT", "properties": {
+            "coin": {"type": "STRING", "description": "Coin name or symbol, e.g. bitcoin, btc, eth."}
+        }, "required": ["coin"]},
+    },
+    {
+        "name": "unit_convert",
+        "description": "Converts units — length, weight, or temperature (e.g. km to miles, kg to lb, C to F).",
+        "parameters": {"type": "OBJECT", "properties": {
+            "value": {"type": "NUMBER", "description": "The number to convert."},
+            "from":  {"type": "STRING", "description": "Source unit, e.g. km, kg, C."},
+            "to":    {"type": "STRING", "description": "Target unit, e.g. miles, lb, F."}
+        }, "required": ["value", "from", "to"]},
+    },
+    {
+        "name": "calculate",
+        "description": "Evaluates a basic arithmetic expression (+ - * / % and parentheses).",
+        "parameters": {"type": "OBJECT", "properties": {
+            "expression": {"type": "STRING", "description": "The arithmetic expression, e.g. '(15+27)*3'."}
+        }, "required": ["expression"]},
+    },
+    {
+        "name": "lunar_date",
+        "description": "Converts a solar date to the Vietnamese lunar calendar date. Defaults to today.",
+        "parameters": {"type": "OBJECT", "properties": {
+            "date": {"type": "STRING", "description": "Solar date YYYY-MM-DD; defaults to today."}
+        }, "required": []},
+    },
+    {
+        "name": "day_briefing",
+        "description": "A quick personal day summary combining date, lunar date, weather, air quality, and USD/VND for the user's location. Use for 'brief me', 'how's today', 'daily summary'.",
+        "parameters": {"type": "OBJECT", "properties": {}},
     },
     {
         "name": "where_am_i",
@@ -980,6 +1042,30 @@ class ParkerLive:
             elif name == "rain_forecast":
                 r = await loop.run_in_executor(None, lambda: rain_forecast(parameters=args, player=self.ui))
                 result = r or "Rain forecast delivered."
+
+            elif name == "currency_convert":
+                result = await loop.run_in_executor(None, lambda: currency_convert(parameters=args, player=self.ui))
+
+            elif name == "air_quality":
+                result = await loop.run_in_executor(None, lambda: air_quality(parameters=args, player=self.ui))
+
+            elif name == "wiki_lookup":
+                result = await loop.run_in_executor(None, lambda: wiki_lookup(parameters=args, player=self.ui))
+
+            elif name == "crypto_price":
+                result = await loop.run_in_executor(None, lambda: crypto_price(parameters=args, player=self.ui))
+
+            elif name == "unit_convert":
+                result = await loop.run_in_executor(None, lambda: unit_convert(parameters=args, player=self.ui))
+
+            elif name == "calculate":
+                result = await loop.run_in_executor(None, lambda: calculate(parameters=args, player=self.ui))
+
+            elif name == "lunar_date":
+                result = await loop.run_in_executor(None, lambda: lunar_date(parameters=args, player=self.ui))
+
+            elif name == "day_briefing":
+                result = await loop.run_in_executor(None, lambda: day_briefing(parameters=args, player=self.ui))
 
             elif name == "where_am_i":
                 r = await loop.run_in_executor(None, lambda: where_am_i(parameters=args, player=self.ui))
