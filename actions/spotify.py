@@ -282,35 +282,75 @@ def _subprocess_run(cmd, shell=False):
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
-def _click_first_track() -> bool:
-    """Double-click the FIRST track row on the current Spotify page. Double-
-    clicking a track plays the whole list from that track (a real context play),
-    unlike Space/Enter which only resume the current song.
+# Spotify's brand green for the big round Play button (#1ED760 ≈ 30,215,96).
+_SPOTIFY_GREEN = (30, 215, 96)
 
-    We find the Spotify window and click a point inside its track list — just
-    below the column header — using window-relative coordinates so it works at
-    any window size/position."""
+
+def _is_spotify_green(px) -> bool:
+    r, g, b = px[0], px[1], px[2]
+    # Wide-ish tolerance so anti-aliasing / theme shifts still match: strong
+    # green, low-ish red, moderate blue — the distinctive Spotify play colour.
+    return (20 <= r <= 70) and (170 <= g <= 240) and (60 <= b <= 140)
+
+
+def _find_and_click_play_button() -> bool:
+    """Find Spotify's big green Play button by its colour and click it. This is
+    the button that plays the WHOLE current page (Liked Songs / a playlist) —
+    unlike Space/Enter, which only resume the current song.
+
+    We screenshot the Spotify window, scan for the largest cluster of Spotify-
+    green pixels in the upper-left content area (where the Play button lives),
+    and click its centre. Returns True if we clicked it."""
     try:
         import pyautogui
     except Exception:
         return False
+
     rect = _spotify_window_rect()
     if rect:
         left, top, width, height = rect
-        # First track row sits below the big header + column labels. Empirically
-        # ~46% down the content area, and ~34% across (over the title text).
-        x = left + int(width * 0.34)
-        y = top + int(height * 0.46)
     else:
-        # No window rect — fall back to the primary screen proportions.
         sw, sh = pyautogui.size()
-        x, y = int(sw * 0.34), int(sh * 0.46)
+        left, top, width, height = 0, 0, sw, sh
+
+    # The Play button sits under the header, on the left. Search that band only:
+    # ~28%–58% down, ~2%–35% across — keeps us off other green UI (progress bar).
+    rx = left + int(width * 0.02)
+    ry = top + int(height * 0.28)
+    rw = int(width * 0.33)
+    rh = int(height * 0.30)
+
     try:
-        pyautogui.moveTo(x, y, duration=0.2)
-        pyautogui.doubleClick(x, y)
+        shot = pyautogui.screenshot(region=(rx, ry, rw, rh))
+    except Exception as e:
+        print(f"[Spotify] screenshot failed: {e}")
+        return False
+
+    # Scan for green pixels; track the bounding box of the biggest green blob.
+    W, H = shot.size
+    px = shot.load()
+    xs, ys = [], []
+    step = 3  # sample every 3rd pixel — fast enough, still finds the button
+    for yy in range(0, H, step):
+        for xx in range(0, W, step):
+            if _is_spotify_green(px[xx, yy]):
+                xs.append(xx)
+                ys.append(yy)
+
+    if len(xs) < 20:            # not enough green → button not found
+        print(f"[Spotify] play button not found ({len(xs)} green px)")
+        return False
+
+    # Centre of the green region → the Play button's centre.
+    cx = rx + sum(xs) // len(xs)
+    cy = ry + sum(ys) // len(ys)
+    try:
+        pyautogui.moveTo(cx, cy, duration=0.2)
+        pyautogui.click(cx, cy)
+        print(f"[Spotify] clicked play button at ({cx},{cy})")
         return True
     except Exception as e:
-        print(f"[Spotify] double-click failed: {e}")
+        print(f"[Spotify] click failed: {e}")
         return False
 
 
@@ -351,23 +391,24 @@ def _play_liked_via_ui(shuffle: bool = True) -> str:
         # Official shortcut: Alt+Shift+S → Go to Liked Songs (more reliable than
         # opening a spotify: URI, which can steal focus or reopen the app).
         pyautogui.hotkey("alt", "shift", "s")
-        time.sleep(2.0)                    # let the Liked Songs page load
+        time.sleep(2.5)                    # let the Liked Songs page load
+
+        # Click the big green Play button (real context play). Do this BEFORE
+        # toggling shuffle so the button is in its initial spot.
+        clicked = _find_and_click_play_button()
 
         if shuffle:
             try:
+                time.sleep(0.4)
                 pyautogui.hotkey("ctrl", "s")   # Ctrl+S = toggle shuffle
-                time.sleep(0.3)
             except Exception:
                 pass
 
-        # Real context play: double-click the first track (not Space/Enter,
-        # which only resume the currently-loaded song).
-        if _click_first_track():
-            return ("I opened your Liked Songs and started them from the top "
-                    "(shuffled). If the wrong thing played, tell me and I'll "
-                    "nudge where I click.")
-        return ("I opened your Liked Songs. I couldn't auto-click Play — press "
-                "the green Play button to start them.")
+        if clicked:
+            return ("I opened your Liked Songs and pressed Play (shuffled). "
+                    "Enjoy, sir.")
+        return ("I opened your Liked Songs but couldn't find the green Play "
+                "button on screen. Press Play once and I'll take it from there.")
     except Exception as e:
         return f"Sir, I couldn't control Spotify: {e}"
 
@@ -657,11 +698,10 @@ def _play_playlist_via_ui(pl: dict) -> str:
         time.sleep(3.5)
         _focus_spotify()
         time.sleep(0.6)
-        if _click_first_track():
-            return (f"I opened your playlist '{pl['name']}' and started it from "
-                    f"the top. If the wrong thing played, tell me.")
-        return (f"I opened your playlist '{pl['name']}'. I couldn't auto-click "
-                f"Play — press the green Play button to start it.")
+        if _find_and_click_play_button():
+            return (f"I opened your playlist '{pl['name']}' and pressed Play.")
+        return (f"I opened your playlist '{pl['name']}' but couldn't find the "
+                f"green Play button. Press Play once to start it.")
     except Exception as e:
         return f"Sir, I couldn't control Spotify: {e}"
 
