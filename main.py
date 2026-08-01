@@ -1527,6 +1527,21 @@ class ParkerLive:
                     {"data": data, "mime_type": "audio/pcm"}
                 )
 
+        try:
+            with sd.InputStream(
+                samplerate=SEND_SAMPLE_RATE,
+                channels=CHANNELS,
+                dtype="int16",
+                blocksize=CHUNK_SIZE,
+                callback=callback,
+            ):
+                print("[PARKER] 🎤 Mic stream open")
+                while True:
+                    await asyncio.sleep(0.1)
+        except Exception as e:
+            print(f"[PARKER] ❌ Mic: {e}")
+            raise
+
     def _enqueue_audio(self, msg):
         """Push a mic frame onto out_queue without ever raising. If the queue is
         full (sender stalled, e.g. during a voice/persona reconnect), drop the
@@ -1546,21 +1561,6 @@ class ParkerLive:
                 q.put_nowait(msg)
             except Exception:
                 pass
-
-        try:
-            with sd.InputStream(
-                samplerate=SEND_SAMPLE_RATE,
-                channels=CHANNELS,
-                dtype="int16",
-                blocksize=CHUNK_SIZE,
-                callback=callback,
-            ):
-                print("[PARKER] 🎤 Mic stream open")
-                while True:
-                    await asyncio.sleep(0.1)
-        except Exception as e:
-            print(f"[PARKER] ❌ Mic: {e}")
-            raise
 
     async def _receive_audio(self):
         print("[PARKER] 👂 Recv started")
