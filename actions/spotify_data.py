@@ -2,15 +2,19 @@
 spotify_data.py — read Spotify library data (playlists, liked songs) WITHOUT
 Premium, via SpotAPI (an unofficial wrapper over Spotify's private web API).
 
-This module only READS data. Actual playback is still driven through the
-desktop app (see spotify.py), because playback control needs Premium.
+Reads ONLY. Playback is still driven through the desktop app (see spotify.py),
+because playback control needs Premium.
 
 Setup:
-    pip install spotapi browser-cookie3
-    python tools/spotify_cookies.py        # save your web-session cookies
+    pip install spotapi
+    python tools/spotify_cookies.py --manual   # save sp_dc + your email
 
-Everything here fails soft: if SpotAPI isn't installed or the session is
-missing/expired, the functions return (None, reason) and the caller falls back.
+config/spotify_cookies.json looks like:
+    { "identifier": "you@email.com",
+      "cookies": { "sp_dc": "...", "sp_key": "..." } }
+
+Everything fails soft: if SpotAPI isn't installed or the session is
+missing/expired, functions return (None, reason) and the caller falls back.
 
 ⚠️ SpotAPI is unofficial and may violate Spotify's Terms of Service.
 """
@@ -20,179 +24,201 @@ from pathlib import Path
 
 _COOKIES = Path(__file__).resolve().parent.parent / "config" / "spotify_cookies.json"
 
-# Cache the logged-in client so we don't rebuild it every call.
-_CLIENT = {"obj": None}
+# Cache the logged-in Login object so we don't rebuild it every call.
+_LOGIN = {"obj": None}
 
 
-def _load_cookies() -> dict | None:
+def _load_session() -> tuple[str | None, dict | None]:
+    """Return (identifier, cookies_dict) from the saved file, or (None, None)."""
     try:
         data = json.loads(_COOKIES.read_text())
-        c = data.get("cookies") or {}
-        return c if c.get("sp_dc") else None
     except Exception:
-        return None
+        return None, None
+    cookies = data.get("cookies") or {}
+    identifier = (data.get("identifier") or "").strip()
+    if not cookies.get("sp_dc"):
+        return None, None
+    return (identifier or None), cookies
 
 
-def _client():
-    """Return a logged-in SpotAPI client, or raise with a clear message."""
-    if _CLIENT["obj"] is not None:
-        return _CLIENT["obj"]
+def _login():
+    """Build (and cache) a logged-in SpotAPI Login from the saved cookies.
+    Raises RuntimeError with a clear message on any problem."""
+    if _LOGIN["obj"] is not None:
+        return _LOGIN["obj"]
 
-    cookies = _load_cookies()
+    identifier, cookies = _load_session()
     if not cookies:
         raise RuntimeError(
-            "no Spotify session — run: python tools/spotify_cookies.py")
+            "no Spotify session — run: python tools/spotify_cookies.py --manual")
+    if not identifier:
+        raise RuntimeError(
+            "missing your Spotify email — re-run tools/spotify_cookies.py "
+            "--manual and enter your account email when asked")
 
     try:
-        import spotapi  # noqa: F401
+        from spotapi import Login, Config  # type: ignore
     except Exception:
         raise RuntimeError("SpotAPI not installed — run: pip install spotapi")
 
-    # SpotAPI's login surface has shifted across versions; try the known ways to
-    # build an authenticated session from raw cookies.
-    from spotapi import Login  # type: ignore
-    obj = None
-    errors = []
-
-    # 1) Login.from_cookies({...})
-    for attempt in ("from_cookies", "from_saver"):
-        fn = getattr(Login, attempt, None)
-        if fn is None:
-            continue
+    # A no-op logger keeps SpotAPI quiet; no CAPTCHA solver needed for cookies.
+    try:
+        from spotapi import NoopLogger  # type: ignore
+        cfg = Config(solver=None, logger=NoopLogger())
+    except Exception:
+        # Older/newer builds may not export NoopLogger the same way.
         try:
-            if attempt == "from_cookies":
-                obj = fn(cookies)
-            else:
-                # Build a saver seeded with our cookies.
-                try:
-                    from spotapi import JSONSaver  # type: ignore
-                    saver = JSONSaver(path=str(_COOKIES))
-                    obj = fn(saver)
-                except Exception as e:
-                    errors.append(f"{attempt}: {e}")
-                    continue
-            break
+            from spotapi.utils.logger import NoopLogger  # type: ignore
+            cfg = Config(solver=None, logger=NoopLogger())
         except Exception as e:
-            errors.append(f"{attempt}: {e}")
+            raise RuntimeError(f"couldn't build SpotAPI Config: {e}")
 
-    # 2) Fall back to constructing Login/session directly with cookies.
-    if obj is None:
-        try:
-            obj = Login(cookies=cookies)  # type: ignore
-        except Exception as e:
-            errors.append(f"Login(cookies=): {e}")
+    dump = {"identifier": identifier, "cookies": cookies}
+    try:
+        login = Login.from_cookies(dump, cfg)
+    except Exception as e:
+        raise RuntimeError(f"SpotAPI login from cookies failed: {e}")
 
-    if obj is None:
-        raise RuntimeError("SpotAPI login failed (" + "; ".join(errors) + ")")
-
-    _CLIENT["obj"] = obj
-    return obj
+    _LOGIN["obj"] = login
+    return login
 
 
-def _first_method(obj, names):
-    for n in names:
-        m = getattr(obj, n, None)
-        if callable(m):
-            return m
-    return None
+def _private_playlist():
+    from spotapi import PrivatePlaylist  # type: ignore
+    return PrivatePlaylist(_login())
 
 
 def get_playlists() -> tuple[list | None, str]:
     """Return ([{name, uri, id}], "") or (None, reason)."""
     try:
-        client = _client()
+        pp = _private_playlist()
     except Exception as e:
         return None, str(e)
 
     try:
-        from spotapi import User  # type: ignore
-        user = User(client)
-        fn = _first_method(user, ("get_playlists", "playlists", "get_all_playlists"))
-        if fn is None:
-            return None, "SpotAPI User has no playlists method on this version"
-        raw = fn()
-        items = _extract_items(raw)
-        out = []
-        for it in items:
-            name = it.get("name") or it.get("title") or "Untitled"
-            uri = it.get("uri") or ""
-            pid = it.get("id") or (uri.split(":")[-1] if uri else "")
-            if not uri and pid:
-                uri = f"spotify:playlist:{pid}"
-            if uri or pid:
-                out.append({"name": name, "uri": uri, "id": pid})
-        return out, ""
+        lib = pp.get_library(50)
+    except TypeError:
+        try:
+            lib = pp.get_library()
+        except Exception as e:
+            return None, f"couldn't read playlists: {e}"
     except Exception as e:
         return None, f"couldn't read playlists: {e}"
+
+    items = _library_items(lib)
+    out = []
+    for it in items:
+        # Library items look like {"uri": "spotify:playlist:..", "name": ..} or
+        # nest the playlist under "item"/"data".
+        node = it.get("item") or it.get("data") or it
+        name = node.get("name") or "Untitled"
+        uri = node.get("uri") or ""
+        pid = node.get("id") or (uri.split(":")[-1] if uri else "")
+        if not uri and pid:
+            uri = f"spotify:playlist:{pid}"
+        # Only keep actual playlists (skip folders/other library entries).
+        if "playlist" in uri or (uri == "" and pid):
+            out.append({"name": name, "uri": uri, "id": pid})
+    if not out and items:
+        return None, "got a library response but found no playlists in it"
+    return out, ""
 
 
 def get_liked_songs(limit: int = 50) -> tuple[list | None, str]:
     """Return ([{name, artist, uri}], "") or (None, reason)."""
     try:
-        client = _client()
+        pp = _private_playlist()
     except Exception as e:
         return None, str(e)
 
+    tracks = []
     try:
-        from spotapi import User  # type: ignore
-        user = User(client)
-        fn = _first_method(user, ("get_liked_songs", "liked_songs",
-                                  "get_saved_tracks", "saved_tracks"))
-        if fn is None:
-            return None, "SpotAPI User has no liked-songs method on this version"
-        try:
-            raw = fn(limit=limit)
-        except TypeError:
-            raw = fn()
-        items = _extract_items(raw)
-        out = []
-        for it in items:
-            tr = it.get("track") or it
-            name = tr.get("name") or "Unknown"
-            artist = _artist_str(tr)
-            uri = tr.get("uri") or ""
-            out.append({"name": name, "artist": artist, "uri": uri})
-            if len(out) >= limit:
-                break
-        return out, ""
+        # Preferred: paginated generator of saved-track pages.
+        gen = getattr(pp, "paginate_saved_tracks", None)
+        if callable(gen):
+            for page in gen():
+                tracks.extend(_track_items(page))
+                if len(tracks) >= limit:
+                    break
+        else:
+            info = pp.get_saved_tracks_info(limit)
+            tracks = _track_items(info)
     except Exception as e:
         return None, f"couldn't read liked songs: {e}"
 
+    out = []
+    for it in tracks[:limit]:
+        node = it.get("item") or it.get("track") or it.get("data") or it
+        name = node.get("name") or "Unknown"
+        out.append({"name": name, "artist": _artist_str(node),
+                    "uri": node.get("uri", "")})
+    if not out:
+        return None, "no liked songs found"
+    return out, ""
 
-def _artist_str(track: dict) -> str:
-    arts = track.get("artists") or []
+
+# ── Response shape helpers (SpotAPI nests things under GraphQL-ish keys) ──────
+def _library_items(lib) -> list:
+    if lib is None:
+        return []
+    if isinstance(lib, list):
+        return lib
+    if isinstance(lib, dict):
+        # Try common shapes: {"items": [...]}, or nested under data→me→library.
+        if "items" in lib and isinstance(lib["items"], list):
+            return lib["items"]
+        data = lib.get("data") or {}
+        for path in (("me", "libraryV3", "items"),
+                     ("me", "library", "items"),
+                     ("libraryV3", "items")):
+            node = data
+            ok = True
+            for key in path:
+                if isinstance(node, dict) and key in node:
+                    node = node[key]
+                else:
+                    ok = False
+                    break
+            if ok and isinstance(node, list):
+                return node
+    return []
+
+
+def _track_items(page) -> list:
+    if page is None:
+        return []
+    if isinstance(page, list):
+        return page
+    if isinstance(page, dict):
+        if "items" in page and isinstance(page["items"], list):
+            return page["items"]
+        data = page.get("data") or {}
+        for path in (("me", "library", "tracks", "items"),
+                     ("tracks", "items")):
+            node = data
+            ok = True
+            for key in path:
+                if isinstance(node, dict) and key in node:
+                    node = node[key]
+                else:
+                    ok = False
+                    break
+            if ok and isinstance(node, list):
+                return node
+    return []
+
+
+def _artist_str(node: dict) -> str:
+    arts = node.get("artists")
+    # Spotify GraphQL: artists = {"items": [{"profile": {"name": ..}}, ..]}
+    if isinstance(arts, dict):
+        arts = arts.get("items", [])
+    names = []
     if isinstance(arts, list):
-        names = []
         for a in arts:
             if isinstance(a, dict):
-                names.append(a.get("name", ""))
+                names.append(a.get("name")
+                             or (a.get("profile") or {}).get("name", ""))
             elif isinstance(a, str):
                 names.append(a)
-        return ", ".join(n for n in names if n)
-    return track.get("artist", "")
-
-
-def _extract_items(raw) -> list:
-    """SpotAPI returns lists directly, dicts with 'items', or a generator that
-    yields pages. Normalise to a flat list of dicts."""
-    if raw is None:
-        return []
-    if isinstance(raw, dict):
-        return raw.get("items") or raw.get("tracks") or raw.get("playlists") or []
-    if isinstance(raw, list):
-        return raw
-    # Generator / iterator of pages or items.
-    items = []
-    try:
-        for page in raw:
-            if isinstance(page, dict) and ("items" in page or "tracks" in page):
-                items.extend(page.get("items") or page.get("tracks") or [])
-            elif isinstance(page, list):
-                items.extend(page)
-            else:
-                items.append(page)
-            if len(items) >= 500:
-                break
-    except Exception:
-        pass
-    return items
+    return ", ".join(n for n in names if n) or node.get("artist", "")

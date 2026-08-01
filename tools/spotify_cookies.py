@@ -83,8 +83,9 @@ def _from_browser_cookie3(browser: str | None) -> dict:
     return cookies
 
 
-def _manual() -> dict:
-    """Ask the user to paste sp_dc (and optionally sp_key) directly."""
+def _manual() -> tuple[dict, str]:
+    """Ask the user to paste sp_dc (+ optionally sp_key) and their email.
+    Returns (cookies_dict, identifier)."""
     print("Manual cookie entry.")
     print("Find it: open https://open.spotify.com (logged in) → F12 →")
     print("  Application/Storage → Cookies → https://open.spotify.com →")
@@ -94,11 +95,12 @@ def _manual() -> dict:
         print("Nothing pasted — aborting.")
         sys.exit(1)
     cookies = {"sp_dc": sp_dc}
-    # sp_key is optional but helps; ask, allow blank.
     sp_key = input("Paste sp_key value (optional, press Enter to skip): ").strip()
     if sp_key:
         cookies["sp_key"] = sp_key.strip('"').strip("'")
-    return cookies
+    # SpotAPI needs an account identifier (your Spotify login email/username).
+    identifier = input("Your Spotify account email (or username): ").strip()
+    return cookies, identifier
 
 
 def main() -> None:
@@ -108,8 +110,9 @@ def main() -> None:
                     help="paste the sp_dc cookie by hand (most reliable)")
     args = ap.parse_args()
 
+    identifier = ""
     if args.manual:
-        cookies = _manual()
+        cookies, identifier = _manual()
     else:
         try:
             print("Reading Spotify cookies from your browsers…")
@@ -125,9 +128,18 @@ def main() -> None:
         print(f"(Cookies collected: {list(cookies) or 'none'})")
         sys.exit(1)
 
+    # SpotAPI needs your account identifier (login email/username) alongside the
+    # cookie. Ask for it if we don't have it yet.
+    if not identifier:
+        identifier = input("Your Spotify account email (or username): ").strip()
+    if not identifier:
+        print("An account email/username is required for SpotAPI. Aborting.")
+        sys.exit(1)
+
     OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(json.dumps({"cookies": cookies}, indent=2))
-    print(f"\n✓ Saved {len(cookies)} Spotify cookie(s) to {OUT}")
+    OUT.write_text(json.dumps(
+        {"identifier": identifier, "cookies": cookies}, indent=2))
+    print(f"\n✓ Saved session ({identifier}, {len(cookies)} cookie(s)) to {OUT}")
     print("You can now ask Parker to list your playlists / liked songs.")
 
 
