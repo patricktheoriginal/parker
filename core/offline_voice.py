@@ -99,7 +99,17 @@ class OfflineVoice:
             self._stt = WhisperSTT(self._whisper_name, language="en")
             return True
         except Exception as e:
-            self._on_log(f"Offline STT unavailable: {e}")
+            msg = str(e).lower()
+            # The Whisper model isn't cached yet and we're offline → can't download.
+            if any(k in msg for k in ("getaddrinfo", "connect", "internet",
+                                       "hub", "snapshot", "offline", "resolve")):
+                self._on_log(
+                    "Offline voice needs the Whisper model, which isn't downloaded "
+                    "yet. Connect to the internet once and run: "
+                    "python -c \"from faster_whisper import WhisperModel; "
+                    "WhisperModel('base')\"  — then it works fully offline.")
+            else:
+                self._on_log(f"Offline STT unavailable: {e}")
             return False
 
     def _run(self):
