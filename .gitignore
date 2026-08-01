@@ -14,6 +14,7 @@ dist/
 
 # Secrets / user config (contains API keys)
 config/api_keys.json
+config/spotify_cookies.json
 
 # Runtime / generated
 memory/long_term.json

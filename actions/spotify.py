@@ -296,49 +296,92 @@ def _subprocess_run(cmd, shell=False):
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
-def _play_liked_via_ui(shuffle: bool = True) -> str:
-    """Free-account path: open Liked Songs via its spotify: URI, then press the
-    Play button. Works without Premium since it drives the desktop app."""
+def _click_first_track() -> bool:
+    """Double-click the FIRST track row on the current Spotify page. Double-
+    clicking a track plays the whole list from that track (a real context play),
+    unlike Space/Enter which only resume the current song.
+
+    We find the Spotify window and click a point inside its track list — just
+    below the column header — using window-relative coordinates so it works at
+    any window size/position."""
     try:
         import pyautogui
     except Exception:
-        return ("Sir, I can't control Spotify without pyautogui installed "
-                "(pip install pyautogui).")
+        return False
+    rect = _spotify_window_rect()
+    if rect:
+        left, top, width, height = rect
+        # First track row sits below the big header + column labels. Empirically
+        # ~46% down the content area, and ~34% across (over the title text).
+        x = left + int(width * 0.34)
+        y = top + int(height * 0.46)
+    else:
+        # No window rect — fall back to the primary screen proportions.
+        sw, sh = pyautogui.size()
+        x, y = int(sw * 0.34), int(sh * 0.46)
     try:
-        # Make sure the app is running, then navigate to Liked Songs by URI.
+        pyautogui.moveTo(x, y, duration=0.2)
+        pyautogui.doubleClick(x, y)
+        return True
+    except Exception as e:
+        print(f"[Spotify] double-click failed: {e}")
+        return False
+
+
+def _spotify_window_rect():
+    """Return (left, top, width, height) of the Spotify window on Windows, or
+    None. Uses pygetwindow if available."""
+    import platform as _pf
+    if _pf.system() != "Windows":
+        return None
+    try:
+        import pygetwindow as gw
+        wins = [w for w in gw.getWindowsWithTitle("Spotify") if w.width > 200]
+        if not wins:
+            return None
+        w = wins[0]
+        return (w.left, w.top, w.width, w.height)
+    except Exception:
+        return None
+
+
+def _play_liked_via_ui(shuffle: bool = True) -> str:
+    """Free-account path: open Liked Songs via its spotify: URI, enable shuffle,
+    then double-click the first track to play the whole list. Works without
+    Premium since it drives the desktop app."""
+    try:
+        import pyautogui  # noqa: F401
+    except Exception:
+        return ("Sir, I can't control Spotify without pyautogui installed "
+                "(pip install pyautogui pygetwindow).")
+    try:
+        import pyautogui
         from actions.open_app import open_app
         open_app(parameters={"app_name": "Spotify"})
         time.sleep(2.0)
-        if not _open_spotify_uri("spotify:collection:tracks"):
-            return "Sir, I couldn't open your Liked Songs."
-        time.sleep(3.5)                    # let the page load
-
-        # Bring Spotify to the foreground so keystrokes land on it.
         _focus_spotify()
-        time.sleep(0.5)
+        time.sleep(0.6)
+
+        # Official shortcut: Alt+Shift+S → Go to Liked Songs (more reliable than
+        # opening a spotify: URI, which can steal focus or reopen the app).
+        pyautogui.hotkey("alt", "shift", "s")
+        time.sleep(2.0)                    # let the Liked Songs page load
 
         if shuffle:
-            # Ctrl+S toggles shuffle in the desktop app. (Best-effort — if it
-            # was already on this turns it off, but most users leave it on.)
             try:
-                pyautogui.hotkey("ctrl", "s")
+                pyautogui.hotkey("ctrl", "s")   # Ctrl+S = toggle shuffle
                 time.sleep(0.3)
             except Exception:
                 pass
 
-        # Play the list: Tab into the track list, then Enter on the first row.
-        # Enter on a focused track starts playback of the whole list from there.
-        pyautogui.press("tab")
-        time.sleep(0.4)
-        pyautogui.press("enter")
-        time.sleep(0.6)
-        # Fallback: Spotify's global "play/pause" is Space when a context is
-        # loaded but nothing is playing yet.
-        pyautogui.press("space")
-
-        return ("I opened your Liked Songs and started playback. If it didn't "
-                "start, just press the green Play button — some Spotify builds "
-                "block simulated keys on the very first play.")
+        # Real context play: double-click the first track (not Space/Enter,
+        # which only resume the currently-loaded song).
+        if _click_first_track():
+            return ("I opened your Liked Songs and started them from the top "
+                    "(shuffled). If the wrong thing played, tell me and I'll "
+                    "nudge where I click.")
+        return ("I opened your Liked Songs. I couldn't auto-click Play — press "
+                "the green Play button to start them.")
     except Exception as e:
         return f"Sir, I couldn't control Spotify: {e}"
 
@@ -448,10 +491,11 @@ _ORDINALS = {
 }
 
 
-def _fetch_playlists(token) -> list[dict]:
-    """Return the user's playlists as [{name, uri, id}] in Spotify's own order —
-    the same order shown under 'All' when the app opens."""
+def _fetch_playlists_web(token) -> list[dict]:
+    """Web-API path (needs Premium OAuth). Returns [{name, uri, id}]."""
     out = []
+    if not token:
+        return out
     try:
         url = f"{_API}/me/playlists?limit=50"
         for _ in range(4):                # up to 200 playlists
@@ -464,22 +508,36 @@ def _fetch_playlists(token) -> list[dict]:
             if not url:
                 break
     except Exception as e:
-        print(f"[Spotify] fetch playlists failed: {e}")
+        print(f"[Spotify] fetch playlists (web) failed: {e}")
     return out
 
 
+def _fetch_playlists(token=None) -> list[dict]:
+    """Return the user's playlists as [{name, uri, id}]. Prefers SpotAPI (works
+    without Premium via your web session); falls back to the OAuth Web API."""
+    try:
+        from actions.spotify_data import get_playlists
+        pls, reason = get_playlists()
+        if pls:
+            print(f"[Spotify] {len(pls)} playlists via SpotAPI")
+            return pls
+        if reason:
+            print(f"[Spotify] SpotAPI playlists unavailable: {reason}")
+    except Exception as e:
+        print(f"[Spotify] SpotAPI playlists error: {e}")
+    return _fetch_playlists_web(token or _access_token())
+
+
 def list_playlists(parameters: dict = None, player=None, session_memory=None) -> str:
-    """List the user's Spotify playlists (as shown under 'All'), numbered, and
-    write each to the Activity Log. Remembers the order so the user can then say
-    'play the first one' or 'play <name>'."""
+    """List the user's Spotify playlists, numbered, and write each to the
+    Activity Log. Remembers the order so the user can then say 'play the first
+    one' or 'play <name>'."""
     global _LAST_PLAYLISTS
-    token = _access_token()
-    if not token:
-        return ("Sir, listing playlists needs the Spotify Web API configured "
-                "(client id/secret/refresh token in config/api_keys.json).")
-    pls = _fetch_playlists(token)
+    pls = _fetch_playlists()
     if not pls:
-        return "Sir, I found no playlists on your Spotify account."
+        return ("Sir, I couldn't read your playlists. Set up SpotAPI (run "
+                "python tools/spotify_cookies.py) or the Spotify Web API in "
+                "config/api_keys.json.")
     _LAST_PLAYLISTS = pls
 
     _log(player, f"SYS: 🎵 {len(pls)} Spotify playlist(s):")
@@ -560,26 +618,23 @@ def play_playlist(parameters: dict = None, player=None, session_memory=None) -> 
     if not selector:
         return "Sir, which playlist? Say a name, or 'the first one'."
 
-    token = _access_token()
-    if not token:
-        return ("Sir, playing a playlist by name needs the Spotify Web API "
-                "configured in config/api_keys.json.")
-
     # Populate the list on demand so 'play the second one' works even before an
-    # explicit 'list playlists'.
+    # explicit 'list playlists'. Uses SpotAPI (no Premium) or the Web API.
     if not _LAST_PLAYLISTS:
-        _LAST_PLAYLISTS = _fetch_playlists(token)
+        _LAST_PLAYLISTS = _fetch_playlists()
     if not _LAST_PLAYLISTS:
-        return "Sir, I found no playlists on your Spotify account."
+        return ("Sir, I couldn't read your playlists. Set up SpotAPI (run "
+                "python tools/spotify_cookies.py) or the Spotify Web API.")
 
     pl = _resolve_playlist(selector)
     if not pl:
         return (f"Sir, I couldn't find a playlist matching '{selector}'. "
                 f"Ask me to list your playlists first.")
 
-    err = _play_context(token, pl["uri"])
+    # Try Web-API context play (Premium); otherwise drive the desktop app.
+    token = _access_token()
+    err = _play_context(token, pl["uri"]) if token else "Premium"
     if err and "Premium" in err:
-        # Free account: open the playlist by URI in the app and press play.
         msg = _play_playlist_via_ui(pl)
     else:
         msg = err if err else f"Playing your playlist '{pl['name']}' on Spotify."
@@ -589,9 +644,10 @@ def play_playlist(parameters: dict = None, player=None, session_memory=None) -> 
 
 
 def _play_playlist_via_ui(pl: dict) -> str:
-    """Free-account path: open a playlist by its spotify: URI and press play."""
+    """Free-account path: open a playlist by its spotify: URI and start it by
+    double-clicking the first track (a real context play)."""
     try:
-        import pyautogui
+        import pyautogui  # noqa: F401
     except Exception:
         return "Sir, I can't control Spotify without pyautogui installed."
     try:
@@ -602,14 +658,12 @@ def _play_playlist_via_ui(pl: dict) -> str:
             return f"Sir, I couldn't open the playlist '{pl['name']}'."
         time.sleep(3.5)
         _focus_spotify()
-        time.sleep(0.5)
-        pyautogui.press("tab")
-        time.sleep(0.4)
-        pyautogui.press("enter")
         time.sleep(0.6)
-        pyautogui.press("space")
-        return (f"I opened your playlist '{pl['name']}' and started playback. "
-                f"If it didn't start, press the green Play button.")
+        if _click_first_track():
+            return (f"I opened your playlist '{pl['name']}' and started it from "
+                    f"the top. If the wrong thing played, tell me.")
+        return (f"I opened your playlist '{pl['name']}'. I couldn't auto-click "
+                f"Play — press the green Play button to start it.")
     except Exception as e:
         return f"Sir, I couldn't control Spotify: {e}"
 
