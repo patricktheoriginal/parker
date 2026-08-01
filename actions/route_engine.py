@@ -3,13 +3,15 @@ route_engine.py — multi-route planning with per-route analysis.
 
 Produces several alternative driving routes between two Vietnam points, each
 with distance, duration, and a short analysis (fastest / shortest / fewest
-turns). Candidate routes come from BOTH:
-  - GraphHopper  (if 'graphhopper_key' is set in config — free tier, register at
-                  graphhopper.com) — often gives good alternatives
-  - OSRM         (public server, free, no key) — always used
+turns). Candidate routes come from BOTH (all free, open source, no API keys):
+  - GraphHopper  (self-hosted open-source server at 'graphhopper_url', default
+                  http://localhost:8989) — used if the local server is running
+  - OSRM         (public server, no key) — always used
 The results are merged and de-duplicated. Routes are cached so the user can ask
 for a "different route" and cycle through the alternatives, and so the 3D map
 view can render the currently-selected one.
+
+To run a local GraphHopper for Vietnam: see tools/setup_graphhopper.sh.
 
 Coordinates are returned as [lat, lon] point lists for the map layer.
 """
@@ -100,20 +102,22 @@ def _osrm_routes(o, d) -> list:
         return []
 
 
-def _graphhopper_key() -> str:
+def _graphhopper_url() -> str:
+    """Base URL of a SELF-HOSTED GraphHopper server (open source, no API key).
+    Defaults to http://localhost:8989. Configure with 'graphhopper_url'.
+    Run the server with remote_agent/../tools/graphhopper — see the README."""
     try:
         from memory.config_manager import load_api_keys
-        return (load_api_keys().get("graphhopper_key") or "").strip()
+        u = (load_api_keys().get("graphhopper_url") or "").strip()
     except Exception:
-        return ""
+        u = ""
+    return (u or "http://localhost:8989").rstrip("/")
 
 
 def _graphhopper_routes(o, d) -> list:
-    """Alternative routes from GraphHopper (needs a free API key in config as
-    'graphhopper_key'). Returns [] if no key or on error."""
-    key = _graphhopper_key()
-    if not key:
-        return []
+    """Alternative routes from a self-hosted GraphHopper server (no API key).
+    Returns [] if the local server isn't running or on error."""
+    base = _graphhopper_url()
     from urllib.parse import urlencode
     params = [
         ("point", f"{o[0]},{o[1]}"), ("point", f"{d[0]},{d[1]}"),
@@ -121,13 +125,13 @@ def _graphhopper_routes(o, d) -> list:
         ("algorithm", "alternative_route"),
         ("alternative_route.max_paths", "3"),
         ("ch.disable", "true"), ("instructions", "true"),
-        ("key", key),
+        # No 'key' — self-hosted GraphHopper needs none.
     ]
-    url = "https://graphhopper.com/api/1/route?" + urlencode(params)
+    url = f"{base}/route?" + urlencode(params)
     try:
-        data = _http_json(url, timeout=20)
-    except Exception as e:
-        print(f"[Route] GraphHopper failed: {e}")
+        data = _http_json(url, timeout=15)
+    except Exception:
+        # Server not running / unreachable — silently fall back to OSRM.
         return []
 
     routes = []
