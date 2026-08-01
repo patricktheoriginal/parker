@@ -47,7 +47,7 @@ from actions.utilities          import (
 from actions.market_vn          import gold_price, fuel_price
 from actions.vn_news            import vietnam_news
 from actions.home_assistant     import home_control, home_list
-from actions.spotify            import play_spotify, play_favorites, list_playlists, play_playlist
+from actions.spotify            import play_spotify, play_favorites, list_playlists, play_playlist, list_liked_songs
 from actions.remote_mac         import (
     remote_status, remote_list, remote_find, remote_get, remote_exec,
 )
@@ -344,6 +344,17 @@ TOOL_DECLARATIONS = [
         "parameters": {"type": "OBJECT", "properties": {
             "selector": {"type": "STRING", "description": "Playlist name, or ordinal/position like 'first', 'second', '3', 'last'."}
         }, "required": ["selector"]},
+    },
+    {
+        "name": "list_liked_songs",
+        "description": (
+            "Lists the user's Liked Songs (their saved/favorite tracks) by name "
+            "and artist, and reads the latest ones back. Use when the user asks "
+            "'what are my liked songs', 'list my liked songs', 'what songs do I "
+            "like', 'read my favorites'. To actually PLAY them, use "
+            "play_favorites instead. Takes no arguments."
+        ),
+        "parameters": {"type": "OBJECT", "properties": {}},
     },
     {
         "name": "microphone_control",
@@ -1284,6 +1295,9 @@ class ParkerLive:
 
             elif name == "play_playlist":
                 result = await loop.run_in_executor(None, lambda: play_playlist(parameters=args, player=self.ui))
+
+            elif name == "list_liked_songs":
+                result = await loop.run_in_executor(None, lambda: list_liked_songs(parameters=args, player=self.ui))
 
             elif name == "remote_status":
                 result = await loop.run_in_executor(None, lambda: remote_status(parameters=args, player=self.ui))

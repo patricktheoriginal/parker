@@ -78,20 +78,6 @@ def _list_devices(token) -> list:
         return []
 
 
-def _active_device(token) -> str | None:
-    """A device id to play on, PREFERRING a genuinely active one. Falls back to
-    any known device (Spotify remembers offline ones), so callers that need a
-    live device should verify playback afterwards with _verify_playing()."""
-    devs = _list_devices(token)
-    active = next((x for x in devs if x.get("is_active")), None)
-    return (active or (devs[0] if devs else {})).get("id")
-
-
-def _has_active_device(token) -> bool:
-    """True only if Spotify reports a device that is actually active/live."""
-    return any(x.get("is_active") for x in _list_devices(token))
-
-
 def _ensure_device(token) -> str | None:
     """Return a device id we can play on. A freshly-opened Spotify shows up in
     the device list but with is_active=false — that's fine: passing its
@@ -424,21 +410,6 @@ def play_favorites(parameters: dict = None, player=None, session_memory=None) ->
     return msg
 
 
-def play_favorites(parameters: dict = None, player=None, session_memory=None) -> str:
-    """Play the user's Liked Songs (favorites) on Spotify, shuffled."""
-    msg = _play_liked_via_api(shuffle=True)
-    if msg is None:                        # API not configured → UI fallback
-        msg = _play_liked_via_ui()
-
-    print(f"[Spotify] {msg}")
-    if player:
-        try:
-            player.write_log(f"[spotify] {msg}")
-        except Exception:
-            pass
-    return msg
-
-
 def _play_via_ui(query: str) -> str:
     """Fallback: drive the Spotify desktop app — open, search, play top result."""
     try:
@@ -550,6 +521,33 @@ def list_playlists(parameters: dict = None, player=None, session_memory=None) ->
     more = f" …and {len(pls) - 10} more" if len(pls) > 10 else ""
     return (f"You have {len(pls)} playlists. Here they are: {spoken}{more}. "
             f"Say 'play the first one', 'play number 3', or the playlist name.")
+
+
+def list_liked_songs(parameters: dict = None, player=None, session_memory=None) -> str:
+    """List the user's Liked Songs (names + artists) via SpotAPI, write them to
+    the Activity Log, and read the first few back. Needs the SpotAPI session
+    (no Premium required)."""
+    try:
+        from actions.spotify_data import get_liked_songs
+    except Exception:
+        return "Sir, reading liked songs needs SpotAPI installed."
+    songs, reason = get_liked_songs(limit=50)
+    if not songs:
+        return (f"Sir, I couldn't read your liked songs ({reason}). Run "
+                f"python tools/spotify_cookies.py to set up the session.")
+
+    _log(player, f"SYS: ❤️ {len(songs)} liked song(s):")
+    for i, s in enumerate(songs, 1):
+        artist = f" — {s['artist']}" if s.get("artist") else ""
+        _log(player, f"  {i}. {s['name']}{artist}")
+
+    top = songs[:8]
+    spoken = "; ".join(
+        f"{s['name']}" + (f" by {s['artist']}" if s.get("artist") else "")
+        for s in top)
+    more = f" …and {len(songs) - 8} more" if len(songs) > 8 else ""
+    return (f"You have {len(songs)} liked songs. The latest: {spoken}{more}. "
+            f"Say 'play my favorites' to play them.")
 
 
 def _resolve_playlist(selector: str) -> dict | None:
