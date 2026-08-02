@@ -83,7 +83,27 @@ def get_base_dir():
 BASE_DIR        = get_base_dir()
 API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
 PROMPT_PATH     = BASE_DIR / "core" / "prompt.txt"
-LIVE_MODEL          = "models/gemini-2.5-flash-native-audio-preview-12-2025"
+
+
+def _cfg_value(key: str, default: str) -> str:
+    """Read an optional string from config/api_keys.json, else the default.
+    Lets you swap models without editing code — handy when Google retires a
+    preview model. Run tools/list_models.py to see what your key supports."""
+    try:
+        with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
+            v = (json.load(f).get(key) or "").strip()
+            return v or default
+    except Exception:
+        return default
+
+
+# Live (voice) model. Google retires preview audio models periodically; if you
+# hit a 1007 "audio content type not supported", set "live_model" in
+# config/api_keys.json to a current one from tools/list_models.py.
+LIVE_MODEL = _cfg_value(
+    "live_model", "models/gemini-2.5-flash-native-audio-preview-09-2025")
+# Text model for summaries / tool actions (override with "text_model" in config).
+TEXT_MODEL = _cfg_value("text_model", "gemini-flash-latest")
 CHANNELS            = 1
 SEND_SAMPLE_RATE    = 16000
 RECEIVE_SAMPLE_RATE = 24000
@@ -1949,7 +1969,7 @@ class ParkerLive:
             client = _genai.Client(api_key=_get_api_key())
             resp   = await asyncio.to_thread(
                 client.models.generate_content,
-                model="gemini-2.5-flash",
+                model=TEXT_MODEL,
                 contents=prompt,
             )
             summary = (resp.text or "").strip()
