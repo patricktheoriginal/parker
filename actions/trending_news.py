@@ -347,7 +347,11 @@ public class SnapHelper {
     [DllImport("user32.dll")] public static extern bool GetWindowRect(
         IntPtr hWnd, out RECT lpRect);
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] public static extern bool ShowWindow(
+        IntPtr hWnd, int nCmdShow);
+    [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr hWnd);
     public struct RECT { public int Left, Top, Right, Bottom; }
+    const int SW_RESTORE = 9;
 
     public static void SnapToQuadrant(int quadrant) {
         // Get screen size.
@@ -369,6 +373,12 @@ public class SnapHelper {
         }
 
         IntPtr hWnd = GetForegroundWindow();
+        // A freshly-opened browser window is usually MAXIMIZED — SetWindowPos
+        // silently does nothing to a maximized window, which is why tabs kept
+        // showing full-screen. Restore it to normal state first.
+        if (IsZoomed(hWnd)) {
+            ShowWindow(hWnd, SW_RESTORE);
+        }
         SetWindowPos(hWnd, IntPtr.Zero, x, y, w, h, 0x0040); // SWP_SHOWWINDOW
     }
 }
