@@ -318,25 +318,12 @@ def _open_tabs_snap_layout(urls: list[str]) -> list:
             webbrowser.open(url)
         return []
 
-    pids = []
-    for i, url in enumerate(urls):
-        try:
-            proc = subprocess.Popen(
-                [browser_path, "--new-window", url],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            pids.append(proc.pid)
-            time.sleep(0.8)  # Let each window appear.
-        except Exception as e:
-            print(f"[TrendingNews] Failed to open tab {url}: {e}")
-
-    # Snap each window into a quadrant using PowerShell + WinAPI. The
-    # System.Windows.Forms assembly MUST be loaded before compiling SnapHelper
-    # (it references Screen.PrimaryScreen) — loading it after silently made
-    # Add-Type throw and SnapHelper was never created, so no window ever moved.
-    time.sleep(1.0)
-    ps_snap = """
+    # PowerShell helper: restore-if-maximized, then move+resize the CURRENT
+    # foreground window into one of 4 screen quadrants. Loading
+    # System.Windows.Forms before compiling SnapHelper matters — it's
+    # referenced inside the C# code, and Add-Type throws if the assembly
+    # isn't loaded first.
+    _ps_helper = """
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type @"
 using System;
@@ -344,65 +331,62 @@ using System.Runtime.InteropServices;
 public class SnapHelper {
     [DllImport("user32.dll")] public static extern bool SetWindowPos(
         IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
-    [DllImport("user32.dll")] public static extern bool GetWindowRect(
-        IntPtr hWnd, out RECT lpRect);
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] public static extern bool ShowWindow(
         IntPtr hWnd, int nCmdShow);
     [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr hWnd);
-    public struct RECT { public int Left, Top, Right, Bottom; }
     const int SW_RESTORE = 9;
 
     public static void SnapToQuadrant(int quadrant) {
-        // Get screen size.
         var screen = System.Windows.Forms.Screen.PrimaryScreen.Bounds;
         int sw = screen.Width, sh = screen.Height;
-
         int x, y, w, h;
-        int gap = 4; // Small gap between windows.
-
+        int gap = 4;
         switch (quadrant) {
-            case 0: // Top-left
-                x = 0; y = 0; w = sw / 2 - gap; h = sh / 2 - gap; break;
-            case 1: // Top-right
-                x = sw / 2 + gap; y = 0; w = sw / 2 - gap; h = sh / 2 - gap; break;
-            case 2: // Bottom-left
-                x = 0; y = sh / 2 + gap; w = sw / 2 - gap; h = sh / 2 - gap; break;
-            default: // Bottom-right
-                x = sw / 2 + gap; y = sh / 2 + gap; w = sw / 2 - gap; h = sh / 2 - gap; break;
+            case 0: x = 0; y = 0; w = sw / 2 - gap; h = sh / 2 - gap; break;
+            case 1: x = sw / 2 + gap; y = 0; w = sw / 2 - gap; h = sh / 2 - gap; break;
+            case 2: x = 0; y = sh / 2 + gap; w = sw / 2 - gap; h = sh / 2 - gap; break;
+            default: x = sw / 2 + gap; y = sh / 2 + gap; w = sw / 2 - gap; h = sh / 2 - gap; break;
         }
-
         IntPtr hWnd = GetForegroundWindow();
         // A freshly-opened browser window is usually MAXIMIZED — SetWindowPos
-        // silently does nothing to a maximized window, which is why tabs kept
-        // showing full-screen. Restore it to normal state first.
-        if (IsZoomed(hWnd)) {
-            ShowWindow(hWnd, SW_RESTORE);
-        }
-        SetWindowPos(hWnd, IntPtr.Zero, x, y, w, h, 0x0040); // SWP_SHOWWINDOW
+        // silently does nothing to a maximized window.
+        if (IsZoomed(hWnd)) { ShowWindow(hWnd, SW_RESTORE); }
+        SetWindowPos(hWnd, IntPtr.Zero, x, y, w, h, 0x0040);
     }
 }
 "@
+[SnapHelper]::SnapToQuadrant({quadrant})
 """
-    for i in range(min(len(pids), 4)):
+
+    pids = []
+    for i, url in enumerate(urls[:4]):
         try:
-            # Focus each window and snap it.
-            focus_ps = f"""
-$proc = Get-Process -Id {pids[i]} -ErrorAction SilentlyContinue |
-    Where-Object {{$_.MainWindowTitle -ne ''}} |
-    Select-Object -First 1
-if ($proc) {{
-    $shell = New-Object -ComObject WScript.Shell
-    $shell.AppActivate($proc.Id)
-    Start-Sleep -Milliseconds 300
-    [SnapHelper]::SnapToQuadrant({i})
-}}
-"""
-            subprocess.Popen(
-                ["powershell", "-NoProfile", "-Command", ps_snap + focus_ps],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            proc = subprocess.Popen(
+                [browser_path, "--new-window", url],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
             )
-            time.sleep(0.5)
+            pids.append(proc.pid)
+        except Exception as e:
+            print(f"[TrendingNews] Failed to open tab {url}: {e}")
+            continue
+
+        # Snap it RIGHT AFTER opening, while it's still the foreground window.
+        # (Relying on the launcher PID to find the window later doesn't work:
+        # Chrome/Edge often hand off to an already-running instance and the
+        # launcher process exits immediately, or spawns child processes, so
+        # Get-Process -Id <launcher pid> finds no window at all — the snap
+        # silently never fired.)
+        time.sleep(1.2)  # let the window actually appear and gain focus
+        try:
+            r = subprocess.run(
+                ["powershell", "-NoProfile", "-Command",
+                 _ps_helper.replace("{quadrant}", str(i))],
+                capture_output=True, timeout=10, text=True,
+            )
+            if r.returncode != 0:
+                print(f"[TrendingNews] Snap PS error for tab {i}: {r.stderr[:300]}")
         except Exception as e:
             print(f"[TrendingNews] Snap failed for window {i}: {e}")
 

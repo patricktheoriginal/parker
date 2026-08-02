@@ -2176,18 +2176,22 @@ class ParkerLive:
         an undocumented kernel driver), so this reminds instead of enforcing."""
         while True:
             await asyncio.sleep(30)
-            alert = await asyncio.to_thread(self._battery_monitor.check)
-            if not alert or not self.session:
+            found = await asyncio.to_thread(self._battery_monitor.check)
+            if not found or not self.session:
                 continue
+            alert_key, alert_text = found
             with self._speaking_lock:
                 speaking = self._is_speaking
             if speaking or (time.monotonic() - self._last_user_speech) < 10:
+                # Don't mark as sent — retry on the next check() instead of
+                # losing the reminder because Parker was mid-conversation.
                 continue
             try:
                 await self.session.send_client_content(
-                    turns={"parts": [{"text": alert}]},
+                    turns={"parts": [{"text": alert_text}]},
                     turn_complete=True,
                 )
+                self._battery_monitor.mark_sent(alert_key)
             except Exception as e:
                 print(f"[Monitor] ⚠️ Could not send battery alert: {e}")
 

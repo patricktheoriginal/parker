@@ -67,7 +67,12 @@ class BatteryMonitor:
         except Exception:
             return None
 
-    def check(self) -> str | None:
+    def check(self) -> tuple[str, str] | None:
+        """Returns (alert_key, alert_text) if a threshold is crossed and due
+        to be spoken, or None. Does NOT mark the alert as sent — call
+        mark_sent(alert_key) only after it's actually been spoken, so a
+        reminder that couldn't be delivered (Parker was mid-conversation)
+        gets retried on the next check() instead of being silently dropped."""
         batt = self._battery()
         if batt is None:
             return None  # no battery (desktop) or psutil unavailable
@@ -75,19 +80,15 @@ class BatteryMonitor:
         plugged = batt.power_plugged
         now = time.monotonic()
 
-        alert = None
-
         # Low threshold: remind to plug in when discharging below it.
         if (self.low_threshold is not None and not plugged
                 and pct <= self.low_threshold):
             if not self._was_below_low and (now - self._last_low_alert) > _COOLDOWN_S:
-                alert = (
+                return ("low", (
                     f"[BATTERY_ALERT] Battery is at {pct:.0f}%, below the "
                     f"{self.low_threshold}% threshold, and not charging. "
                     "Tell the user plainly to plug in the charger."
-                )
-                self._last_low_alert = now
-            self._was_below_low = True
+                ))
         elif plugged or (self.low_threshold is None) or pct > self.low_threshold:
             self._was_below_low = False
 
@@ -95,18 +96,27 @@ class BatteryMonitor:
         if (self.high_threshold is not None and plugged
                 and pct >= self.high_threshold):
             if not self._was_above_high and (now - self._last_high_alert) > _COOLDOWN_S:
-                alert = (
+                return ("high", (
                     f"[BATTERY_ALERT] Battery is at {pct:.0f}%, at or above the "
                     f"{self.high_threshold}% threshold, and still charging. "
                     "Tell the user plainly to unplug the charger to protect "
                     "battery health."
-                )
-                self._last_high_alert = now
-            self._was_above_high = True
+                ))
         elif not plugged or (self.high_threshold is None) or pct < self.high_threshold:
             self._was_above_high = False
 
-        return alert
+        return None
+
+    def mark_sent(self, alert_key: str) -> None:
+        """Record that the alert was actually spoken, starting its cooldown
+        and preventing it from re-firing until the state changes again."""
+        now = time.monotonic()
+        if alert_key == "low":
+            self._was_below_low = True
+            self._last_low_alert = now
+        elif alert_key == "high":
+            self._was_above_high = True
+            self._last_high_alert = now
 
 
 def battery_status(parameters: dict = None, player=None, session_memory=None) -> str:
