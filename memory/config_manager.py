@@ -158,3 +158,30 @@ def save_brief_enabled(enabled: bool) -> None:
             data = {}
     data["morning_brief_enabled"] = enabled
     CONFIG_FILE.write_text(json.dumps(data, indent=4), encoding="utf-8")
+
+
+def get_trending_schedule() -> dict:
+    """Returns {"enabled": bool, "hour": int, "minute": int} for the daily
+    automatic trending-news read-aloud. Default: disabled, 07:00."""
+    d = load_api_keys().get("trending_news_schedule", {})
+    return {
+        "enabled": bool(d.get("enabled", False)),
+        "hour":    int(d.get("hour", 7)),
+        "minute":  int(d.get("minute", 0)),
+    }
+
+
+def save_trending_schedule(enabled: bool, hour: int = 7, minute: int = 0) -> None:
+    ensure_config_dir()
+    data: dict = {}
+    if CONFIG_FILE.exists():
+        try:
+            data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+    data["trending_news_schedule"] = {
+        "enabled": enabled,
+        "hour": max(0, min(23, hour)),
+        "minute": max(0, min(59, minute)),
+    }
+    CONFIG_FILE.write_text(json.dumps(data, indent=4), encoding="utf-8")

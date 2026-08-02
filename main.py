@@ -73,7 +73,9 @@ from actions.background_monitor import (
     add_monitor, remove_monitor, list_monitors, check_all as monitor_check_all,
 )
 from actions.web_search        import _news as _fetch_news_sync
-from memory.config_manager     import get_brief_enabled
+from memory.config_manager     import (
+    get_brief_enabled, get_trending_schedule, save_trending_schedule,
+)
 
 
 def get_base_dir():
@@ -425,6 +427,23 @@ TOOL_DECLARATIONS = [
             "'latest headlines', 'tin moi nhat', 'news update'. Takes no arguments."
         ),
         "parameters": {"type": "OBJECT", "properties": {}},
+    },
+    {
+        "name": "trending_news_schedule",
+        "description": (
+            "Sets or clears a daily automatic time for trending_news to run "
+            "by itself (e.g. every morning at 7 AM). Use when the user says "
+            "'read me the news every morning at 7', 'schedule trending news "
+            "for 8am', 'stop the daily news', 'turn off scheduled news', or "
+            "asks what the current schedule is. "
+            "action: 'set', 'clear', or 'status'. hour: 0-23 (required for "
+            "set). minute: 0-59 (optional, default 0)."
+        ),
+        "parameters": {"type": "OBJECT", "properties": {
+            "action": {"type": "STRING", "description": "set | clear | status"},
+            "hour":   {"type": "INTEGER", "description": "Hour in 24h format, 0-23."},
+            "minute": {"type": "INTEGER", "description": "Minute, 0-59 (default 0)."}
+        }, "required": ["action"]},
     },
     {
         "name": "microphone_control",
@@ -1053,6 +1072,7 @@ class ParkerLive:
         self._turn_done_event: asyncio.Event | None = None
         self._dashboard     = None
         self._briefing_sent    = False          # morning briefing fires once per process
+        self._trending_last_run_date = None     # date() of last auto trending-news run
         self._sys_monitor      = SystemMonitor()  # persistent cooldown state
         self._battery_monitor  = BatteryMonitor()  # voice reminders (can't control charging in software)
         self._proactive        = ProactiveEngine()
@@ -1384,6 +1404,31 @@ class ParkerLive:
                     result = ("Sir, the trending news feature is taking too long "
                               "(network or TTS issue) — I stopped waiting. Try again.")
                     self.ui.write_log("ERR: trending_news timed out after 90s.")
+
+            elif name == "trending_news_schedule":
+                act = (args.get("action") or "").lower().strip()
+                if act == "set":
+                    hour = args.get("hour")
+                    minute = args.get("minute", 0)
+                    if hour is None:
+                        result = "Sir, what hour should I run it at (0-23)?"
+                    else:
+                        save_trending_schedule(True, int(hour), int(minute or 0))
+                        result = (f"I'll read the trending news automatically every "
+                                  f"day at {int(hour):02d}:{int(minute or 0):02d}.")
+                elif act == "clear":
+                    sched = get_trending_schedule()
+                    save_trending_schedule(False, sched["hour"], sched["minute"])
+                    result = "Scheduled trending news turned off."
+                elif act == "status":
+                    sched = get_trending_schedule()
+                    if sched["enabled"]:
+                        result = (f"Trending news is scheduled daily at "
+                                  f"{sched['hour']:02d}:{sched['minute']:02d}.")
+                    else:
+                        result = "No trending news schedule is set."
+                else:
+                    result = "Sir, say 'set', 'clear', or 'status' for the news schedule."
 
             elif name == "remote_status":
                 result = await loop.run_in_executor(None, lambda: remote_status(parameters=args, player=self.ui))
@@ -2133,6 +2178,43 @@ class ParkerLive:
             except Exception as e:
                 print(f"[Monitor] ⚠️ Could not send battery alert: {e}")
 
+    async def _run_trending_news_schedule(self) -> None:
+        """Background task: automatically run the trending-news feature once a
+        day at the configured time (config 'trending_news_schedule' —
+        default disabled). Checks every minute; fires once per calendar day
+        when the clock matches, regardless of how long Parker has been open."""
+        from datetime import datetime as _dt
+        while True:
+            await asyncio.sleep(60)
+            sched = get_trending_schedule()
+            if not sched["enabled"]:
+                continue
+            now = _dt.now()
+            today = now.date()
+            if (self._trending_last_run_date == today
+                    or now.hour != sched["hour"]
+                    or now.minute != sched["minute"]):
+                continue
+            # Don't interrupt an active conversation — wait for a quiet moment
+            # rather than skipping the day entirely.
+            with self._speaking_lock:
+                speaking = self._is_speaking
+            if speaking or (time.monotonic() - self._last_user_speech) < 10:
+                continue
+            self._trending_last_run_date = today
+            self.ui.write_log("SYS: Scheduled trending news starting…")
+            try:
+                loop = asyncio.get_event_loop()
+                await asyncio.wait_for(
+                    loop.run_in_executor(
+                        None, lambda: trending_news(parameters={}, player=self.ui)),
+                    timeout=90,
+                )
+            except asyncio.TimeoutError:
+                self.ui.write_log("ERR: Scheduled trending news timed out after 90s.")
+            except Exception as e:
+                print(f"[Monitor] ⚠️ Scheduled trending news failed: {e}")
+
     # ── Background monitor ──────────────────────────────────────────────────────
 
     async def _run_background_monitor(self) -> None:
@@ -2336,6 +2418,7 @@ class ParkerLive:
                     tg.create_task(self._play_audio())
                     tg.create_task(self._run_system_monitor())
                     tg.create_task(self._run_battery_monitor())
+                    tg.create_task(self._run_trending_news_schedule())
                     tg.create_task(self._run_background_monitor())
                     tg.create_task(self._run_proactive_mode())
                     tg.create_task(self._run_network_watchdog())
