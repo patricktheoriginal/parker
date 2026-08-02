@@ -2276,20 +2276,30 @@ class ParkerLive:
                     _conn_backoff = 3
                     continue
 
-                # Quota exhausted (429). Reconnecting fast just burns more quota
-                # and worsens it — back off long and tell the user plainly.
+                # Quota exhausted (429). Don't keep hammering the API — switch
+                # to the offline voice immediately and tell the user by voice.
                 if not _was_reconnect and (
                         "RESOURCE_EXHAUSTED" in err_str or "429" in err_str
                         or "quota" in err_str.lower()):
-                    _conn_backoff = min(getattr(self, "_conn_backoff", 30) * 2, 300)
-                    self._conn_backoff = _conn_backoff
                     self.ui.write_log(
-                        "ERR: Gemini quota exhausted (HTTP 429). Waiting "
-                        f"{_conn_backoff}s. Check your plan/billing at "
+                        "ERR: Gemini quota exhausted (429) — switching to "
+                        "offline mode. Check your plan/billing at "
                         "ai.google.dev/gemini-api/docs/rate-limits.")
                     self.set_speaking(False)
-                    self.ui.set_state("SLEEPING")
-                    await asyncio.sleep(_conn_backoff)
+                    self._start_offline_voice()
+                    if self._offline_voice and self._announced_offline is False:
+                        self._announced_offline = True
+                        notice = (
+                            "My Gemini quota has been exhausted, sir. "
+                            "I'm switching to the local model now. "
+                            "I can still help you with everything offline. "
+                            "The quota usually resets within a day.")
+                        await asyncio.to_thread(self._offline_voice.announce, notice)
+                    # Stay in this state until the user restarts or quota resets.
+                    while True:
+                        await asyncio.sleep(30)
+                        if not self._offline_voice or not self._offline_voice.is_running():
+                            break
                     continue
 
                 # Google-side transient internal error (1011): not our bug and
