@@ -104,6 +104,13 @@ LIVE_MODEL = _cfg_value(
     "live_model", "models/gemini-2.5-flash-native-audio-latest")
 # Text model for summaries / tool actions (override with "text_model" in config).
 TEXT_MODEL = _cfg_value("text_model", "gemini-flash-latest")
+# Offline mode settings (in config/api_keys.json).
+# "whisper_model": "tiny"|"base"|"small"|"medium" (default: "small")
+WHISPER_MODEL = _cfg_value("whisper_model", "small")
+# "force_offline": true → start in offline mode (local Ollama) without trying
+# the cloud first. Useful when your Gemini quota is exhausted. Set back to
+# false once quota resets. Default: false.
+FORCE_OFFLINE = _cfg_value("force_offline", "").lower() in ("1", "true", "yes")
 CHANNELS            = 1
 SEND_SAMPLE_RATE    = 16000
 RECEIVE_SAMPLE_RATE = 24000
@@ -1057,7 +1064,7 @@ class ParkerLive:
             respond_fn=_respond,
             on_state=lambda s: self.ui.set_state(s),
             on_log=lambda m: self.ui.write_log(m if ":" in m else f"SYS: {m}"),
-            whisper_model="base",
+            whisper_model=WHISPER_MODEL,
         )
         self._offline_voice.start()
         self.ui.write_log("SYS: OFFLINE VOICE active — speak to Parker (local model).")
@@ -2167,6 +2174,17 @@ class ParkerLive:
             self._dashboard = None
 
         while True:
+            # ── FORCE_OFFLINE mode: skip the cloud entirely ──────────────
+            if FORCE_OFFLINE and not self._reconnecting:
+                self._start_offline_voice()
+                self.ui.set_state("SLEEPING")
+                self.ui.write_log("SYS: OFFLINE-ONLY mode (config force_offline=true).")
+                while FORCE_OFFLINE and self._offline_voice and self._offline_voice.is_running():
+                    await asyncio.sleep(5)
+                if not FORCE_OFFLINE:
+                    continue
+                return
+
             try:
                 print("[PARKER] Connecting...")
                 self.ui.set_state("THINKING")

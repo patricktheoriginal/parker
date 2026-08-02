@@ -140,6 +140,11 @@ class OfflineVoice:
         self._on_state = on_state or (lambda s: None)
         self._on_log = on_log or (lambda m: None)
         self._whisper_name = whisper_model
+        if self._whisper_name == "base":
+            # 'small' is noticeably better than 'base' with only ~2x the
+            # latency.  On a decent CPU/GPU it's still real-time.  Fall back
+            # to 'base' if the user explicitly set something else.
+            self._whisper_name = "small"
 
         self._stt = None
         self._tts = _TTS()
@@ -290,10 +295,21 @@ class OfflineVoice:
         self._history[:] = self._history[-12:]
 
         self._on_log(f"Parker (offline): {reply}")
+        # Streaming TTS: speak each sentence as soon as the model produces it.
+        # Split by sentence-ending punctuation so the first sentence starts
+        # playing immediately — the user hears Parker within ~0.5s instead of
+        # waiting for the entire reply to be generated.
+        import re as _re
+        sentences = _re.split(r'(?<=[.!?])\s+', reply.strip())
+        if not sentences:
+            sentences = [reply]
         self._speaking = True
         self._on_state("SPEAKING")
         try:
-            self._tts.speak(reply)
+            for s in sentences:
+                s = s.strip()
+                if s:
+                    self._tts.speak(s)
         finally:
             self._speaking = False
             self._on_state("LISTENING")

@@ -39,6 +39,22 @@ def _reg():
     from actions.open_app import open_app
     from actions.computer_settings import computer_settings
     from actions.system_monitor import get_system_status
+    # Additional offline-capable tools (UI automation — no API needed).
+    try:
+        from actions.spotify import play_spotify, play_favorites
+        _SPOTIFY_OK = True
+    except Exception:
+        _SPOTIFY_OK = False
+    try:
+        from actions.desktop import desktop_control
+        _DESKTOP_OK = True
+    except Exception:
+        _DESKTOP_OK = False
+    try:
+        from actions.file_controller import file_controller
+        _FILE_OK = True
+    except Exception:
+        _FILE_OK = False
 
     def _weather(a):   return weather_action(parameters=a)
     def _rain(a):      return rain_forecast(a)
@@ -61,6 +77,10 @@ def _reg():
                     f"uptime {d['uptime']}.")
         except Exception as e:
             return f"Could not read system status: {e}"
+    def _spotify(a):    return play_spotify(parameters=a)
+    def _fav(a):        return play_favorites(parameters=a)
+    def _desktop(a):    return desktop_control(parameters=a)
+    def _file(a):       return file_controller(parameters=a)
 
     def T(name, desc, props, required):
         return {"type": "function", "function": {
@@ -69,7 +89,7 @@ def _reg():
         }}
 
     S = {"type": "string"}
-    return {
+    tools = {
         "weather_report": (_weather, T("weather_report", "Weather for a Vietnamese city (default Vietnam).",
                             {"city": S}, [])),
         "rain_forecast": (_rain, T("rain_forecast", "Rain forecast for a Vietnamese place.",
@@ -93,6 +113,22 @@ def _reg():
                             {"action": S, "description": S, "value": S}, [])),
         "system_status": (_status, T("system_status", "CPU/RAM/GPU/temperature status.", {}, [])),
     }
+    # Add optional tools that may not import on every machine.
+    if _SPOTIFY_OK:
+        tools["play_spotify"] = (_spotify, T("play_spotify",
+            "Play a song/artist on Spotify by name.",
+            {"query": S}, ["query"]))
+        tools["play_favorites"] = (_fav, T("play_favorites",
+            "Play the user's Liked Songs on Spotify (shuffled).", {}, []))
+    if _DESKTOP_OK:
+        tools["desktop_control"] = (_desktop, T("desktop_control",
+            "Click/type/scroll on the desktop by description.",
+            {"action": S, "description": S}, ["action", "description"]))
+    if _FILE_OK:
+        tools["file_controller"] = (_file, T("file_controller",
+            "Copy/move/delete/list files and folders.",
+            {"action": S, "source": S, "destination": S}, ["action", "source"]))
+    return tools
 
 
 _REGISTRY = None
@@ -124,11 +160,15 @@ def _dispatch(name: str, args: dict) -> str:
 
 _SYSTEM = (
     "You are Parker, a concise, professional voice assistant running OFFLINE on "
-    "a local model. Always answer in English. Use a tool when the user asks for "
-    "something a tool can do (weather, rain, news, routes, messages, calls, "
-    "reminders, opening apps, controlling the PC or music, system status). "
-    "If a tool returns an error or says it needs the internet, tell the user "
-    "briefly and plainly. Keep replies to 1-3 short sentences."
+    "a local model. Always answer in English. Be direct and efficient. "
+    "Use tools when the user asks for something a tool can do: "
+    "weather, rain, routes, search, news, messages, calls, reminders, "
+    "opening apps, controlling the PC (volume, brightness, music, settings), "
+    "desktop control (click/type), file operations, or system status. "
+    "For music: use play_spotify or play_favorites. "
+    "If a tool fails or needs the internet, tell the user briefly. "
+    "Keep replies to 1-3 short sentences. Never fabricate information — "
+    "say you don't know if unsure."
 )
 
 
