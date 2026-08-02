@@ -33,6 +33,14 @@ _FEEDS = [
     ("DanTri",      "https://dantri.com.vn/rss/home.rss"),
 ]
 
+# Real homepage URLs for the 4-panel display (RSS URLs aren't browsable pages).
+_HOMEPAGES = {
+    "VnExpress": "https://vnexpress.net/",
+    "TuoiTre":   "https://tuoitre.vn/",
+    "ThanhNien": "https://thanhnien.vn/",
+    "DanTri":    "https://dantri.com.vn/",
+}
+
 # Max stories per feed to include in the summary.
 _MAX_PER_FEED = 3
 
@@ -248,6 +256,41 @@ def _speak(text: str) -> None:
     _speak_piper(text)
 
 
+def _find_windows_browser() -> str | None:
+    """Find a real path to msedge.exe or chrome.exe on Windows. subprocess.Popen
+    with a bare 'msedge'/'chrome' name only works if it's on PATH — which it
+    usually ISN'T for these (they live under Program Files) — so that silently
+    raised FileNotFoundError and no tabs ever opened. Search known install
+    locations instead, same approach as open_app.py."""
+    import os
+    import shutil
+
+    # If it happens to be on PATH, that's the easiest case.
+    for name in ("msedge.exe", "msedge", "chrome.exe", "chrome"):
+        found = shutil.which(name)
+        if found:
+            return found
+
+    candidates = []
+    pf = os.environ.get("ProgramFiles", r"C:\Program Files")
+    pf86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
+    localapp = os.environ.get("LocalAppData", "")
+    candidates += [
+        Path(pf86) / "Microsoft" / "Edge" / "Application" / "msedge.exe",
+        Path(pf) / "Microsoft" / "Edge" / "Application" / "msedge.exe",
+        Path(pf) / "Google" / "Chrome" / "Application" / "chrome.exe",
+        Path(pf86) / "Google" / "Chrome" / "Application" / "chrome.exe",
+    ]
+    if localapp:
+        candidates.append(
+            Path(localapp) / "Google" / "Chrome" / "Application" / "chrome.exe")
+
+    for c in candidates:
+        if c.exists():
+            return str(c)
+    return None
+
+
 # ── Tab Layout (Windows Snap) ─────────────────────────────────────────────────
 def _open_tabs_snap_layout(urls: list[str]) -> list:
     """Open 4 browser tabs and snap them into a 2x2 grid on Windows.
@@ -260,25 +303,27 @@ def _open_tabs_snap_layout(urls: list[str]) -> list:
             webbrowser.open(url)
         return []
 
+    browser_path = _find_windows_browser()
+    if not browser_path:
+        print("[TrendingNews] No Edge/Chrome found — falling back to default "
+              "browser via webbrowser.open (no snap layout).")
+        import webbrowser
+        for url in urls:
+            webbrowser.open(url)
+        return []
+
     pids = []
     for i, url in enumerate(urls):
-        # Open each URL in Edge (or Chrome) as a separate process.
         try:
-            # Try Edge first, then Chrome.
-            for browser in ["msedge", "chrome", "msedge.exe", "chrome.exe"]:
-                try:
-                    proc = subprocess.Popen(
-                        [browser, "--new-window", url],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                    )
-                    pids.append(proc.pid)
-                    break
-                except FileNotFoundError:
-                    continue
+            proc = subprocess.Popen(
+                [browser_path, "--new-window", url],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            pids.append(proc.pid)
             time.sleep(0.8)  # Let each window appear.
         except Exception as e:
-            print(f"[TrendingNews] Failed to open tab: {e}")
+            print(f"[TrendingNews] Failed to open tab {url}: {e}")
 
     # Snap each window into a quadrant using PowerShell + WinAPI.
     time.sleep(1.0)
@@ -380,8 +425,8 @@ def trending_news(parameters: dict = None, player=None,
         player.write_log(f"SYS: Summarizing {total} stories from {sources}...")
     summaries = _summarize(all_news)
 
-    # 3. Build URLs for the4 tabs (homepages of each source).
-    urls = [feed[1].replace("/rss/", "/") for feed in _FEEDS]  # Convert RSS to homepage.
+    # 3. Build URLs for the 4 tabs (real homepages, not RSS feed URLs).
+    urls = [_HOMEPAGES[name] for name, _url in _FEEDS]
 
     # 4. Open 4 tabs in snap layout.
     if player:
