@@ -734,3 +734,60 @@ def play_spotify(parameters: dict, player=None, session_memory=None) -> str:
         except Exception:
             pass
     return msg
+
+
+def _now_playing_via_api() -> str | None:
+    """Return 'Song by Artist' via the Web API, or None if unavailable/not
+    configured (caller falls back to reading the window title)."""
+    token = _access_token()
+    if not token:
+        return None
+    try:
+        d = _http(f"{_API}/me/player/currently-playing",
+                  headers=_api_headers(token))
+    except Exception as e:
+        print(f"[Spotify] now-playing API failed: {e}")
+        return None
+    if not d or not d.get("item"):
+        return ""  # nothing playing (valid state, not an error)
+    item = d["item"]
+    name = item.get("name", "Unknown")
+    artists = ", ".join(a.get("name", "") for a in item.get("artists", []))
+    playing = " (playing)" if d.get("is_playing") else " (paused)"
+    return f"{name} by {artists}{playing}" if artists else f"{name}{playing}"
+
+
+def _now_playing_via_window_title() -> str | None:
+    """Windows fallback: the Spotify desktop app shows 'Song - Artist' in its
+    window title once a track is loaded (just 'Spotify Free'/'Spotify
+    Premium' when idle)."""
+    import platform
+    if platform.system() != "Windows":
+        return None
+    try:
+        import pygetwindow as gw
+    except Exception:
+        return None
+    try:
+        for w in gw.getWindowsWithTitle(""):
+            title = (w.title or "").strip()
+            if title and " - " in title and title.lower() not in (
+                    "spotify", "spotify premium", "spotify free"):
+                return title
+    except Exception as e:
+        print(f"[Spotify] window-title now-playing failed: {e}")
+    return None
+
+
+def now_playing(parameters: dict = None, player=None, session_memory=None) -> str:
+    """Report the currently playing (or paused) Spotify track."""
+    info = _now_playing_via_api()
+    if info is None:
+        title = _now_playing_via_window_title()
+        if not title:
+            return ("Sir, I can't tell what's playing — Spotify may be closed, "
+                    "or nothing is loaded.")
+        return f"Now playing: {title}."
+    if info == "":
+        return "Sir, nothing is currently playing on Spotify."
+    return f"Now playing: {info}."

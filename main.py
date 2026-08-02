@@ -47,7 +47,7 @@ from actions.utilities          import (
 from actions.market_vn          import gold_price, fuel_price
 from actions.vn_news            import vietnam_news
 from actions.home_assistant     import home_control, home_list
-from actions.spotify            import play_spotify, play_favorites, list_playlists, play_playlist, list_liked_songs
+from actions.spotify            import play_spotify, play_favorites, list_playlists, play_playlist, list_liked_songs, now_playing
 from actions.remote_mac         import (
     remote_status, remote_list, remote_find, remote_get, remote_exec,
 )
@@ -413,6 +413,16 @@ TOOL_DECLARATIONS = [
             "'what are my liked songs', 'list my liked songs', 'what songs do I "
             "like', 'read my favorites'. To actually PLAY them, use "
             "play_favorites instead. Takes no arguments."
+        ),
+        "parameters": {"type": "OBJECT", "properties": {}},
+    },
+    {
+        "name": "now_playing",
+        "description": (
+            "Reports the song and artist currently playing (or paused) on "
+            "Spotify. Use when the user asks 'what's playing', 'what song is "
+            "this', 'who sings this', 'what am I listening to'. For skip/"
+            "pause/volume, use computer_settings instead. Takes no arguments."
         ),
         "parameters": {"type": "OBJECT", "properties": {}},
     },
@@ -1389,6 +1399,9 @@ class ParkerLive:
 
             elif name == "list_liked_songs":
                 result = await loop.run_in_executor(None, lambda: list_liked_songs(parameters=args, player=self.ui))
+
+            elif name == "now_playing":
+                result = await loop.run_in_executor(None, lambda: now_playing(parameters=args, player=self.ui))
 
             elif name == "trending_news":
                 # Hard timeout — fetch/summarize/TTS all touch the network with
