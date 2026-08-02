@@ -1,33 +1,63 @@
-# find_battery_wmi.ps1 — discover which Lenovo battery-control WMI classes
-# your ThinkPad's BIOS/EC actually exposes, so Parker's charge-control feature
-# can be wired up correctly for YOUR machine instead of guessed class names.
+# find_battery_wmi.ps1 — discover how Lenovo Vantage on THIS machine controls
+# Battery Conservation Mode. root\WMI didn't expose a Lenovo class, so this
+# checks the other places Vantage commonly uses: other WMI namespaces,
+# registry keys, and the running Vantage services.
 #
-# Usage (PowerShell, no admin needed to just list):
+# Usage (PowerShell, no admin needed):
 #   powershell -ExecutionPolicy Bypass -File tools\find_battery_wmi.ps1
 
-Write-Host "=== Lenovo/battery-related WMI classes in root\WMI ===" -ForegroundColor Cyan
-$classes = Get-CimClass -Namespace root\WMI -ErrorAction SilentlyContinue |
-    Where-Object { $_.CimClassName -match 'Batt|Charg|Conserv|Threshold' }
-
-if (-not $classes) {
-    Write-Host "No matching classes found in root\WMI." -ForegroundColor Yellow
-} else {
-    foreach ($c in $classes) {
-        Write-Host "`nClass: $($c.CimClassName)" -ForegroundColor Green
-        Write-Host "  Methods:"
-        $c.CimClassMethods | ForEach-Object { Write-Host "    - $($_.Name)" }
-        Write-Host "  Properties:"
-        $c.CimClassProperties | ForEach-Object { Write-Host "    - $($_.Name) ($($_.CimType))" }
+Write-Host "=== 1. ALL WMI namespaces containing 'Lenovo' or 'IdeaPad' or 'ThinkPad' anywhere under ROOT ===" -ForegroundColor Cyan
+$namespaces = Get-CimInstance -Namespace root -ClassName __Namespace -ErrorAction SilentlyContinue |
+    Select-Object -ExpandProperty Name
+foreach ($ns in $namespaces) {
+    if ($ns -match 'Lenovo|WMI|CIMV2') {
+        Write-Host "  root\$ns"
     }
 }
 
-Write-Host "`n=== Also checking root\CIMV2\power ===" -ForegroundColor Cyan
-Get-CimClass -Namespace root\CIMV2\power -ErrorAction SilentlyContinue |
-    Where-Object { $_.CimClassName -match 'Batt|Charg' } |
-    ForEach-Object { Write-Host "  $($_.CimClassName)" }
+Write-Host "`n=== 2. Searching ALL namespaces for classes with 'Lenovo' in the name ===" -ForegroundColor Cyan
+function Search-Namespace($path, $depth) {
+    if ($depth -gt 3) { return }
+    try {
+        $classes = Get-CimClass -Namespace $path -ErrorAction SilentlyContinue |
+            Where-Object { $_.CimClassName -match 'Lenovo' }
+        foreach ($c in $classes) {
+            Write-Host "  FOUND: $path -> $($c.CimClassName)" -ForegroundColor Green
+            $c.CimClassMethods | ForEach-Object { Write-Host "    method: $($_.Name)" }
+        }
+        $subs = Get-CimInstance -Namespace $path -ClassName __Namespace -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty Name
+        foreach ($sub in $subs) {
+            Search-Namespace "$path\$sub" ($depth + 1)
+        }
+    } catch {}
+}
+Search-Namespace "root" 0
 
-Write-Host "`n=== Standard battery status (Win32_Battery) ===" -ForegroundColor Cyan
-Get-CimInstance -ClassName Win32_Battery | Select-Object EstimatedChargeRemaining, BatteryStatus, Chemistry
+Write-Host "`n=== 3. Registry: HKLM\SOFTWARE\Lenovo (conservation/charge/threshold keys) ===" -ForegroundColor Cyan
+$paths = @(
+    "HKLM:\SOFTWARE\Lenovo",
+    "HKLM:\SOFTWARE\WOW6432Node\Lenovo"
+)
+foreach ($p in $paths) {
+    if (Test-Path $p) {
+        Write-Host "Scanning $p ..."
+        Get-ChildItem -Path $p -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { $_.PSChildName -match 'Batt|Charg|Conserv|Threshold|Power' } |
+            ForEach-Object { Write-Host "  $($_.PSPath -replace 'Microsoft.PowerShell.Core\\Registry::','')" }
+    }
+}
 
-Write-Host "`nDone. Copy everything above and send it back so the charge-control" -ForegroundColor Cyan
-Write-Host "feature can be wired to the exact class/method names your machine has." -ForegroundColor Cyan
+Write-Host "`n=== 4. Lenovo-related Windows services (running) ===" -ForegroundColor Cyan
+Get-Service | Where-Object { $_.DisplayName -match 'Lenovo|Vantage' } |
+    Select-Object Name, DisplayName, Status | Format-Table -AutoSize
+
+Write-Host "`n=== 5. Lenovo-related scheduled tasks / exe paths (Program Files) ===" -ForegroundColor Cyan
+Get-ChildItem "C:\Program Files\Lenovo" -Recurse -Include "*.exe" -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -match 'Charg|Batt|Conserv|Power' } |
+    ForEach-Object { Write-Host "  $($_.FullName)" }
+Get-ChildItem "C:\Program Files (x86)\Lenovo" -Recurse -Include "*.exe" -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -match 'Charg|Batt|Conserv|Power' } |
+    ForEach-Object { Write-Host "  $($_.FullName)" }
+
+Write-Host "`nDone. Copy everything above and send it back." -ForegroundColor Cyan
