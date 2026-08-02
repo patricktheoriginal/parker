@@ -67,6 +67,7 @@ from actions.trending_news     import trending_news
 from actions.computer_control  import computer_control
 from actions.game_updater      import game_updater
 from actions.system_monitor    import SystemMonitor, get_system_status
+from actions.battery_monitor   import BatteryMonitor, battery_status
 from actions.proactive         import ProactiveEngine
 from actions.background_monitor import (
     add_monitor, remove_monitor, list_monitors, check_all as monitor_check_all,
@@ -205,6 +206,35 @@ TOOL_DECLARATIONS = [
             "type": "OBJECT",
             "properties": {},
         }
+    },
+    {
+        "name": "battery_status",
+        "description": (
+            "Reports the current battery percentage and whether it's charging. "
+            "Use when the user asks about battery level or charging state."
+        ),
+        "parameters": {"type": "OBJECT", "properties": {}},
+    },
+    {
+        "name": "battery_reminder",
+        "description": (
+            "Sets or clears voice reminders for battery thresholds. Windows has "
+            "no software way to actually stop/start charging on this machine, "
+            "so this REMINDS the user by voice instead of controlling the "
+            "charger. Use when the user says things like: 'remind me to "
+            "unplug at 80%', 'stop charging at 80' (sets a HIGH threshold — "
+            "reminds to unplug when charging above it), 'remind me to charge "
+            "when below 20%' (sets the LOW threshold — default is already "
+            "20%), 'stop reminding me about charging' (clears reminders), "
+            "'charge normally' (clears the high threshold). "
+            "action: 'set_low', 'set_high', 'clear_low', 'clear_high', or "
+            "'status' (report current thresholds). percent: the threshold "
+            "number, required for set_low/set_high."
+        ),
+        "parameters": {"type": "OBJECT", "properties": {
+            "action":  {"type": "STRING", "description": "set_low | set_high | clear_low | clear_high | status"},
+            "percent": {"type": "INTEGER", "description": "Threshold percentage (0-100), for set_low/set_high."}
+        }, "required": ["action"]},
     },
     {
         "name": "weather_report",
@@ -1024,6 +1054,7 @@ class ParkerLive:
         self._dashboard     = None
         self._briefing_sent    = False          # morning briefing fires once per process
         self._sys_monitor      = SystemMonitor()  # persistent cooldown state
+        self._battery_monitor  = BatteryMonitor()  # voice reminders (can't control charging in software)
         self._proactive        = ProactiveEngine()
         self._last_user_speech = time.monotonic()  # updated on every user utterance
         self._session_log: list[str] = []          # conversation turns for end-of-session summary
@@ -1522,6 +1553,30 @@ class ParkerLive:
             elif name == "system_status":
                 r = await loop.run_in_executor(None, get_system_status)
                 result = str(r)
+
+            elif name == "battery_status":
+                result = await loop.run_in_executor(None, lambda: battery_status(parameters=args, player=self.ui))
+
+            elif name == "battery_reminder":
+                act = (args.get("action") or "").lower().strip()
+                pct = args.get("percent")
+                bm = self._battery_monitor
+                if act == "set_low" and pct is not None:
+                    bm.set_low(int(pct))
+                    result = f"I'll remind you to plug in when the battery drops below {int(pct)}%."
+                elif act == "set_high" and pct is not None:
+                    bm.set_high(int(pct))
+                    result = f"I'll remind you to unplug when the battery reaches {int(pct)}% while charging."
+                elif act == "clear_low":
+                    bm.set_low(None)
+                    result = "Low-battery reminder cleared."
+                elif act == "clear_high":
+                    bm.set_high(None)
+                    result = "Unplug reminder cleared — charging normally now."
+                elif act == "status":
+                    result = bm.status_text()
+                else:
+                    result = "Sir, tell me a threshold percent to set, or say 'status'/'clear'."
 
             elif name == "manage_monitor":
                 action = args.get("action", "").lower().strip()
@@ -2044,6 +2099,28 @@ class ParkerLive:
             except Exception as e:
                 print(f"[Monitor] ⚠️ Could not send alert: {e}")
 
+    async def _run_battery_monitor(self) -> None:
+        """Background task: voice reminders to plug in / unplug at thresholds
+        the user set. Windows exposes no software API to actually stop
+        charging on this machine (Lenovo Vantage's Conservation Mode talks to
+        an undocumented kernel driver), so this reminds instead of enforcing."""
+        while True:
+            await asyncio.sleep(30)
+            alert = await asyncio.to_thread(self._battery_monitor.check)
+            if not alert or not self.session:
+                continue
+            with self._speaking_lock:
+                speaking = self._is_speaking
+            if speaking or (time.monotonic() - self._last_user_speech) < 10:
+                continue
+            try:
+                await self.session.send_client_content(
+                    turns={"parts": [{"text": alert}]},
+                    turn_complete=True,
+                )
+            except Exception as e:
+                print(f"[Monitor] ⚠️ Could not send battery alert: {e}")
+
     # ── Background monitor ──────────────────────────────────────────────────────
 
     async def _run_background_monitor(self) -> None:
@@ -2246,6 +2323,7 @@ class ParkerLive:
                     tg.create_task(self._receive_audio())
                     tg.create_task(self._play_audio())
                     tg.create_task(self._run_system_monitor())
+                    tg.create_task(self._run_battery_monitor())
                     tg.create_task(self._run_background_monitor())
                     tg.create_task(self._run_proactive_mode())
                     tg.create_task(self._run_network_watchdog())
