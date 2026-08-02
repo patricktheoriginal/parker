@@ -63,6 +63,7 @@ from actions.file_controller   import file_controller
 from actions.code_helper       import code_helper
 from actions.dev_agent         import dev_agent
 from actions.web_search        import web_search as web_search_action
+from actions.trending_news     import trending_news
 from actions.computer_control  import computer_control
 from actions.game_updater      import game_updater
 from actions.system_monitor    import SystemMonitor, get_system_status
@@ -380,6 +381,18 @@ TOOL_DECLARATIONS = [
             "'what are my liked songs', 'list my liked songs', 'what songs do I "
             "like', 'read my favorites'. To actually PLAY them, use "
             "play_favorites instead. Takes no arguments."
+        ),
+        "parameters": {"type": "OBJECT", "properties": {}},
+    },
+    {
+        "name": "trending_news",
+        "description": (
+            "Shows the latest Vietnamese trending news from 4 major sources "
+            "(VnExpress, TuoiTre, ThanhNien, DanTri) in a 4-panel grid layout "
+            "on screen, reads AI-generated summaries of the top stories aloud "
+            "via TTS, then closes all panels automatically. Use when the user "
+            "asks for 'trending news', 'tin tuc noi bat', 'what's happening', "
+            "'latest headlines', 'tin moi nhat', 'news update'. Takes no arguments."
         ),
         "parameters": {"type": "OBJECT", "properties": {}},
     },
@@ -1325,6 +1338,9 @@ class ParkerLive:
 
             elif name == "list_liked_songs":
                 result = await loop.run_in_executor(None, lambda: list_liked_songs(parameters=args, player=self.ui))
+
+            elif name == "trending_news":
+                result = await loop.run_in_executor(None, lambda: trending_news(parameters=args, player=self.ui))
 
             elif name == "remote_status":
                 result = await loop.run_in_executor(None, lambda: remote_status(parameters=args, player=self.ui))
