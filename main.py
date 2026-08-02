@@ -2258,6 +2258,29 @@ class ParkerLive:
                     _conn_backoff = 3
                     continue
 
+                # Quota exhausted (429). Reconnecting fast just burns more quota
+                # and worsens it — back off long and tell the user plainly.
+                if not _was_reconnect and (
+                        "RESOURCE_EXHAUSTED" in err_str or "429" in err_str
+                        or "quota" in err_str.lower()):
+                    _conn_backoff = min(getattr(self, "_conn_backoff", 30) * 2, 300)
+                    self._conn_backoff = _conn_backoff
+                    self.ui.write_log(
+                        "ERR: Gemini quota exhausted (HTTP 429). Waiting "
+                        f"{_conn_backoff}s. Check your plan/billing at "
+                        "ai.google.dev/gemini-api/docs/rate-limits.")
+                    self.set_speaking(False)
+                    self.ui.set_state("SLEEPING")
+                    await asyncio.sleep(_conn_backoff)
+                    continue
+
+                # Google-side transient internal error (1011): not our bug and
+                # not quota. It arrives as a ConnectionClosed, so the net-error
+                # handling below backs off and reconnects; just note it clearly.
+                if not _was_reconnect and "1011" in err_str:
+                    self.ui.write_log(
+                        "NET: Gemini internal error (1011) — reconnecting.")
+
                 # Network / timeout errors — log clearly and back off. Also treat
                 # it as a network error if an active connectivity check fails (the
                 # watchdog may have closed the session cleanly on a drop).
