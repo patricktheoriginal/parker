@@ -101,7 +101,7 @@ def _cfg_value(key: str, default: str) -> str:
 # hit a 1007 "audio content type not supported", set "live_model" in
 # config/api_keys.json to a current one from tools/list_models.py.
 LIVE_MODEL = _cfg_value(
-    "live_model", "models/gemini-2.5-flash-native-audio-preview-09-2025")
+    "live_model", "models/gemini-2.5-flash-native-audio-latest")
 # Text model for summaries / tool actions (override with "text_model" in config).
 TEXT_MODEL = _cfg_value("text_model", "gemini-flash-latest")
 CHANNELS            = 1
