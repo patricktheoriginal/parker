@@ -78,7 +78,6 @@ def _fetch_all() -> dict[str, list[dict]]:
 def _summarize(all_news: dict[str, list[dict]]) -> dict[str, str]:
     """Use the text model to create a short spoken summary per source.
     Returns {source_name: summary_text}."""
-    from config import api_keys  # noqa: ensure path
     summaries = {}
 
     # Build a combined prompt for all sources.
