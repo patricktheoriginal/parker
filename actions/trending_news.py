@@ -318,11 +318,16 @@ def _open_tabs_snap_layout(urls: list[str]) -> list:
             webbrowser.open(url)
         return []
 
-    # PowerShell helper: restore-if-maximized, then move+resize the CURRENT
-    # foreground window into one of 4 screen quadrants. Loading
-    # System.Windows.Forms before compiling SnapHelper matters — it's
-    # referenced inside the C# code, and Add-Type throws if the assembly
-    # isn't loaded first.
+    proc_name = Path(browser_path).stem  # "msedge" or "chrome"
+
+    # PowerShell: find every top-level window belonging to the browser process
+    # that has a real title and isn't in the list of already-snapped handles,
+    # pick the NEWEST one (by process start time), restore-if-maximized, and
+    # move+resize it into a quadrant. This avoids two failure modes we hit
+    # before: (1) GetForegroundWindow() can grab the wrong window if focus
+    # hasn't settled on the new tab yet, and (2) chasing the launcher's PID
+    # doesn't work because Chrome/Edge often hand the URL to an already-
+    # running instance and the launcher exits immediately.
     _ps_helper = """
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type @"
@@ -331,13 +336,12 @@ using System.Runtime.InteropServices;
 public class SnapHelper {
     [DllImport("user32.dll")] public static extern bool SetWindowPos(
         IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
-    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] public static extern bool ShowWindow(
         IntPtr hWnd, int nCmdShow);
     [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr hWnd);
     const int SW_RESTORE = 9;
 
-    public static void SnapToQuadrant(int quadrant) {
+    public static bool SnapToQuadrant(IntPtr hWnd, int quadrant) {
         var screen = System.Windows.Forms.Screen.PrimaryScreen.Bounds;
         int sw = screen.Width, sh = screen.Height;
         int x, y, w, h;
@@ -348,18 +352,26 @@ public class SnapHelper {
             case 2: x = 0; y = sh / 2 + gap; w = sw / 2 - gap; h = sh / 2 - gap; break;
             default: x = sw / 2 + gap; y = sh / 2 + gap; w = sw / 2 - gap; h = sh / 2 - gap; break;
         }
-        IntPtr hWnd = GetForegroundWindow();
-        // A freshly-opened browser window is usually MAXIMIZED — SetWindowPos
-        // silently does nothing to a maximized window.
         if (IsZoomed(hWnd)) { ShowWindow(hWnd, SW_RESTORE); }
-        SetWindowPos(hWnd, IntPtr.Zero, x, y, w, h, 0x0040);
+        return SetWindowPos(hWnd, IntPtr.Zero, x, y, w, h, 0x0040);
     }
 }
 "@
-[SnapHelper]::SnapToQuadrant({quadrant})
+$exclude = @({exclude})
+$win = Get-Process -Name '{proc_name}' -ErrorAction SilentlyContinue |
+    Where-Object {{ $_.MainWindowHandle -ne 0 -and $exclude -notcontains $_.MainWindowHandle.ToInt64() }} |
+    Sort-Object StartTime -Descending |
+    Select-Object -First 1
+if ($win) {{
+    $ok = [SnapHelper]::SnapToQuadrant($win.MainWindowHandle, {quadrant})
+    Write-Output "HANDLE=$($win.MainWindowHandle.ToInt64()) TITLE=$($win.MainWindowTitle) OK=$ok"
+}} else {{
+    Write-Output "NOMATCH"
+}}
 """
 
     pids = []
+    snapped_handles: list[str] = []
     for i, url in enumerate(urls[:4]):
         try:
             proc = subprocess.Popen(
@@ -372,21 +384,23 @@ public class SnapHelper {
             print(f"[TrendingNews] Failed to open tab {url}: {e}")
             continue
 
-        # Snap it RIGHT AFTER opening, while it's still the foreground window.
-        # (Relying on the launcher PID to find the window later doesn't work:
-        # Chrome/Edge often hand off to an already-running instance and the
-        # launcher process exits immediately, or spawns child processes, so
-        # Get-Process -Id <launcher pid> finds no window at all — the snap
-        # silently never fired.)
-        time.sleep(1.2)  # let the window actually appear and gain focus
+        # Give the window time to actually appear (cold browser start is
+        # much slower than opening a tab on an already-running instance).
+        time.sleep(2.5 if i == 0 else 1.2)
+        script = (_ps_helper
+                  .replace("{proc_name}", proc_name)
+                  .replace("{quadrant}", str(i))
+                  .replace("{exclude}", ",".join(snapped_handles)))
         try:
             r = subprocess.run(
-                ["powershell", "-NoProfile", "-Command",
-                 _ps_helper.replace("{quadrant}", str(i))],
+                ["powershell", "-NoProfile", "-Command", script],
                 capture_output=True, timeout=10, text=True,
             )
-            if r.returncode != 0:
-                print(f"[TrendingNews] Snap PS error for tab {i}: {r.stderr[:300]}")
+            out = (r.stdout or "").strip()
+            print(f"[TrendingNews] snap tab {i}: {out or r.stderr[:200]}")
+            m = re.search(r"HANDLE=(\d+)", out)
+            if m:
+                snapped_handles.append(m.group(1))
         except Exception as e:
             print(f"[TrendingNews] Snap failed for window {i}: {e}")
 
