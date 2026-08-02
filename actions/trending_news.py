@@ -262,19 +262,17 @@ def _speak(text: str) -> None:
 
 
 def _find_windows_browser() -> str | None:
-    """Find a real path to msedge.exe or chrome.exe on Windows. subprocess.Popen
-    with a bare 'msedge'/'chrome' name only works if it's on PATH — which it
-    usually ISN'T for these (they live under Program Files) — so that silently
-    raised FileNotFoundError and no tabs ever opened. Search known install
-    locations instead, same approach as open_app.py."""
-    import os
-    import shutil
+    """Find a real path to msedge.exe or chrome.exe on Windows.
 
-    # If it happens to be on PATH, that's the easiest case.
-    for name in ("msedge.exe", "msedge", "chrome.exe", "chrome"):
-        found = shutil.which(name)
-        if found:
-            return found
+    Search real install locations FIRST, not PATH. Windows registers
+    'msedge'/'msedge.exe' as an App Execution Alias under
+    %LOCALAPPDATA%\\Microsoft\\WindowsApps — shutil.which() happily finds
+    that stub, but launching it hands off to the real process via the
+    Windows Apps mechanism and the launched PID has NO relation to the
+    actual msedge.exe process that owns the window, breaking the
+    Get-Process -Name match used for snapping/closing later. A direct
+    Program Files path avoids that indirection entirely."""
+    import os
 
     candidates = []
     pf = os.environ.get("ProgramFiles", r"C:\Program Files")
@@ -293,6 +291,14 @@ def _find_windows_browser() -> str | None:
     for c in candidates:
         if c.exists():
             return str(c)
+
+    # Last resort: PATH (may be the WindowsApps stub, which is why this
+    # comes after the direct paths above, not before).
+    import shutil
+    for name in ("msedge.exe", "msedge", "chrome.exe", "chrome"):
+        found = shutil.which(name)
+        if found:
+            return found
     return None
 
 
