@@ -167,6 +167,12 @@ def _produce_bytes(path: str):
             for f in p.rglob("*"):
                 if not f.is_file():
                     continue
+                # A symlink inside the allowed root can point OUTSIDE it
+                # (e.g. ~/Documents/evil -> /etc). rglob() follows symlinks
+                # by default, so re-check every file against roots, not just
+                # the top-level requested path.
+                if not _within_roots(f):
+                    continue
                 try:
                     total += f.stat().st_size
                     if total > _MAX_TRANSFER:

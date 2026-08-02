@@ -179,7 +179,6 @@ def _speak_edge(text: str, voice: str = "vi-VN-HoaiMyNeural") -> bool:
     try:
         import edge_tts
         import sounddevice as sd
-        import numpy as np
 
         async def _gen():
             communicate = edge_tts.Communicate(text, voice)
@@ -300,7 +299,8 @@ def _find_windows_browser() -> str | None:
 # ── Tab Layout (Windows Snap) ─────────────────────────────────────────────────
 def _open_tabs_snap_layout(urls: list[str]) -> list:
     """Open 4 browser tabs and snap them into a 2x2 grid on Windows.
-    Returns list of PIDs for later cleanup."""
+    Returns the list of window handles (as strings) that were snapped, for
+    _close_tabs() to close later. NOT launcher PIDs — see _close_tabs."""
     import platform
     if platform.system() != "Windows":
         # On non-Windows, just open tabs normally.
@@ -370,16 +370,14 @@ if ($win) {{
 }}
 """
 
-    pids = []
     snapped_handles: list[str] = []
     for i, url in enumerate(urls[:4]):
         try:
-            proc = subprocess.Popen(
+            subprocess.Popen(
                 [browser_path, "--new-window", url],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
-            pids.append(proc.pid)
         except Exception as e:
             print(f"[TrendingNews] Failed to open tab {url}: {e}")
             continue
@@ -404,17 +402,34 @@ if ($win) {{
         except Exception as e:
             print(f"[TrendingNews] Snap failed for window {i}: {e}")
 
-    return pids
+    return snapped_handles
 
 
-def _close_tabs(pids: list) -> None:
-    """Close browser tabs by PID."""
-    for pid in pids:
-        try:
-            subprocess.run(["taskkill", "/F", "/PID", str(pid)],
-                           capture_output=True, timeout=5)
-        except Exception:
-            pass
+def _close_tabs(handles: list) -> None:
+    """Close the browser windows we opened, by window handle (NOT the launcher
+    PID — Chrome/Edge routinely hand off to an already-running instance and
+    the launcher process exits immediately, so killing launcher PIDs closed
+    nothing and tabs never auto-closed). Re-resolve each handle to its real
+    owning process PID via PowerShell and stop that."""
+    if not handles:
+        return
+    import platform
+    if platform.system() != "Windows":
+        return
+    handle_list = ",".join(str(h) for h in handles)
+    script = f"""
+$handles = @({handle_list})
+Get-Process | Where-Object {{
+    $_.MainWindowHandle -ne 0 -and $handles -contains $_.MainWindowHandle.ToInt64()
+}} | ForEach-Object {{
+    Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+}}
+"""
+    try:
+        subprocess.run(["powershell", "-NoProfile", "-Command", script],
+                       capture_output=True, timeout=10, text=True)
+    except Exception as e:
+        print(f"[TrendingNews] Failed to close tabs: {e}")
 
 
 # ── Main entry point ──────────────────────────────────────────────────────────
@@ -448,7 +463,7 @@ def trending_news(parameters: dict = None, player=None,
     # 4. Open 4 tabs in snap layout.
     if player:
         player.write_log("SYS: Opening4 news tabs in grid layout...")
-    pids = _open_tabs_snap_layout(urls)
+    window_handles = _open_tabs_snap_layout(urls)
 
     # 5. Read summaries aloud (one by one).
     combined_text = ""
@@ -466,8 +481,8 @@ def trending_news(parameters: dict = None, player=None,
 
     # 6. Close all tabs after reading.
     time.sleep(1.0)  # Brief pause before closing.
-    if pids:
-        _close_tabs(pids)
+    if window_handles:
+        _close_tabs(window_handles)
 
     if player:
         player.write_log("SYS: Trending news complete — tabs closed.")
