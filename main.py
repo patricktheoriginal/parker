@@ -1408,14 +1408,28 @@ class ParkerLive:
                 # no reliable upper bound of their own, and run_in_executor()
                 # has no timeout, so a slow/blocked call would leave Parker
                 # "thinking" forever. Bail out and report it instead.
+                #
+                # Must stay ABOVE the sum of every internal step's own worst
+                # case (RSS fetch ~40s + AI summarize ~20s + opening/snapping
+                # 4 tabs ~25s + TTS join(timeout=120) inside trending_news()):
+                # a shorter outer timeout would fire on every slow-but-normal
+                # run, and combined with the old "try again" wording that
+                # caused an infinite retry loop (fixed below too).
                 try:
                     result = await asyncio.wait_for(
                         loop.run_in_executor(None, lambda: trending_news(parameters=args, player=self.ui)),
-                        timeout=90,
+                        timeout=210,
                     )
                 except asyncio.TimeoutError:
-                    result = ("Sir, the trending news feature is taking too long "
-                              "(network or TTS issue) — I stopped waiting. Try again.")
+                    # Do NOT suggest retrying here — the model would read "try
+                    # again" as an instruction to immediately call this tool
+                    # again, and since the same slow network/TTS conditions
+                    # are still there, it times out again -> infinite tool-
+                    # call loop. State the failure as final instead.
+                    result = ("Sir, the trending news feature timed out due to a "
+                              "network or TTS issue and has been cancelled. Do not "
+                              "retry automatically — tell the user it failed and "
+                              "wait for them to ask again later.")
                     self.ui.write_log("ERR: trending_news timed out after 90s.")
 
             elif name == "trending_news_schedule":
@@ -2225,10 +2239,10 @@ class ParkerLive:
                 await asyncio.wait_for(
                     loop.run_in_executor(
                         None, lambda: trending_news(parameters={}, player=self.ui)),
-                    timeout=90,
+                    timeout=210,  # keep in sync with the manual trending_news call
                 )
             except asyncio.TimeoutError:
-                self.ui.write_log("ERR: Scheduled trending news timed out after 90s.")
+                self.ui.write_log("ERR: Scheduled trending news timed out after 210s.")
             except Exception as e:
                 print(f"[Monitor] ⚠️ Scheduled trending news failed: {e}")
 
