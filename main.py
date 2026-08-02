@@ -1371,7 +1371,19 @@ class ParkerLive:
                 result = await loop.run_in_executor(None, lambda: list_liked_songs(parameters=args, player=self.ui))
 
             elif name == "trending_news":
-                result = await loop.run_in_executor(None, lambda: trending_news(parameters=args, player=self.ui))
+                # Hard timeout — fetch/summarize/TTS all touch the network with
+                # no reliable upper bound of their own, and run_in_executor()
+                # has no timeout, so a slow/blocked call would leave Parker
+                # "thinking" forever. Bail out and report it instead.
+                try:
+                    result = await asyncio.wait_for(
+                        loop.run_in_executor(None, lambda: trending_news(parameters=args, player=self.ui)),
+                        timeout=90,
+                    )
+                except asyncio.TimeoutError:
+                    result = ("Sir, the trending news feature is taking too long "
+                              "(network or TTS issue) — I stopped waiting. Try again.")
+                    self.ui.write_log("ERR: trending_news timed out after 90s.")
 
             elif name == "remote_status":
                 result = await loop.run_in_executor(None, lambda: remote_status(parameters=args, player=self.ui))

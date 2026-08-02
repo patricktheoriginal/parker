@@ -112,7 +112,9 @@ def _summarize(all_news: dict[str, list[dict]]) -> dict[str, str]:
         api_key = _json.loads(config_path.read_text(encoding="utf-8")).get("gemini_api_key", "")
         if api_key:
             from google import genai
-            client = genai.Client(api_key=api_key)
+            client = genai.Client(
+                api_key=api_key,
+                http_options={"timeout": 20_000})  # ms — don't hang on a slow API
             resp = client.models.generate_content(
                 model="gemini-flash-latest", contents=prompt)
             raw = (resp.text or "").strip()
@@ -164,9 +166,16 @@ def _summarize(all_news: dict[str, list[dict]]) -> dict[str, str]:
 
 
 # ── TTS ────────────────────────────────────────────────────────────────────────
+# Network call to Microsoft's edge-tts service has no built-in timeout, so a
+# slow/blocked connection (common issue in some regions/networks) would hang
+# the whole feature indefinitely. Cap it hard.
+_EDGE_TTS_TIMEOUT = 15
+
+
 def _speak_edge(text: str, voice: str = "vi-VN-HoaiMyNeural") -> bool:
     """Speak text using Edge TTS (online, high quality Vietnamese voice).
-    Returns True if successful."""
+    Returns True if successful. Never blocks longer than _EDGE_TTS_TIMEOUT for
+    the network part."""
     try:
         import edge_tts
         import sounddevice as sd
@@ -180,36 +189,35 @@ def _speak_edge(text: str, voice: str = "vi-VN-HoaiMyNeural") -> bool:
                     audio_data += chunk["data"]
             return audio_data
 
-        audio_bytes = asyncio.run(_gen())
+        async def _gen_with_timeout():
+            return await asyncio.wait_for(_gen(), timeout=_EDGE_TTS_TIMEOUT)
+
+        try:
+            audio_bytes = asyncio.run(_gen_with_timeout())
+        except asyncio.TimeoutError:
+            print(f"[TrendingNews] Edge TTS timed out after {_EDGE_TTS_TIMEOUT}s")
+            return False
         if not audio_bytes:
             return False
 
-        # Save to temp WAV, then play.
-        import tempfile
-        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
-            f.write(audio_bytes)
-            tmp_path = f.name
-
-        # Use ffmpeg to convert mp3 to wav if available, otherwise use pyttsx3.
+        # Decode MP3 without shelling out to ffmpeg (which may not be
+        # installed) — pydub uses audioop/ffmpeg too, so prefer a pure-Python
+        # decode via soundfile/miniaudio if available; otherwise skip Edge TTS
+        # cleanly instead of hanging on a missing external tool.
         try:
-            wav_path = tmp_path.replace(".mp3", ".wav")
-            subprocess.run(["ffmpeg", "-y", "-i", tmp_path, wav_path],
-                           capture_output=True, timeout=10)
-            import wave
-            with wave.open(wav_path, "rb") as wf:
-                sr = wf.getframerate()
-                frames = wf.readframes(wf.getnframes())
-            audio = np.frombuffer(frames, dtype=np.int16)
-            sd.play(audio, sr)
+            import soundfile as sf
+            import io as _io
+            data, sr = sf.read(_io.BytesIO(audio_bytes), dtype="int16")
+            sd.play(data, sr)
             sd.wait()
-            Path(tmp_path).unlink(missing_ok=True)
-            Path(wav_path).unlink(missing_ok=True)
             return True
-        except Exception:
-            Path(tmp_path).unlink(missing_ok=True)
+        except ImportError:
+            print("[TrendingNews] soundfile not installed — skipping Edge TTS "
+                  "playback (pip install soundfile for online Vietnamese TTS).")
             return False
-    except ImportError:
-        return False
+        except Exception as e:
+            print(f"[TrendingNews] Edge TTS decode/playback failed: {e}")
+            return False
     except Exception as e:
         print(f"[TrendingNews] Edge TTS failed: {e}")
         return False
