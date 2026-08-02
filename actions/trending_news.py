@@ -18,7 +18,6 @@ Requires:
 import asyncio
 import re
 import subprocess
-import textwrap
 import threading
 import time
 import urllib.request
@@ -170,7 +169,6 @@ def _speak_edge(text: str, voice: str = "vi-VN-HoaiMyNeural") -> bool:
     Returns True if successful."""
     try:
         import edge_tts
-        import io
         import sounddevice as sd
         import numpy as np
 
@@ -325,9 +323,13 @@ def _open_tabs_snap_layout(urls: list[str]) -> list:
         except Exception as e:
             print(f"[TrendingNews] Failed to open tab {url}: {e}")
 
-    # Snap each window into a quadrant using PowerShell + WinAPI.
+    # Snap each window into a quadrant using PowerShell + WinAPI. The
+    # System.Windows.Forms assembly MUST be loaded before compiling SnapHelper
+    # (it references Screen.PrimaryScreen) — loading it after silently made
+    # Add-Type throw and SnapHelper was never created, so no window ever moved.
     time.sleep(1.0)
     ps_snap = """
+Add-Type -AssemblyName System.Windows.Forms
 Add-Type @"
 using System;
 using System.Runtime.InteropServices;
@@ -363,7 +365,6 @@ public class SnapHelper {
     }
 }
 "@
-Add-Type -AssemblyName System.Windows.Forms
 """
     for i in range(min(len(pids), 4)):
         try:
