@@ -429,12 +429,12 @@ TOOL_DECLARATIONS = [
     {
         "name": "trending_news",
         "description": (
-            "Shows the latest Vietnamese trending news from 4 major sources "
-            "(VnExpress, TuoiTre, ThanhNien, DanTri) in a 4-panel grid layout "
-            "on screen, reads AI-generated summaries of the top stories aloud "
-            "via TTS, then closes all panels automatically. Use when the user "
-            "asks for 'trending news', 'tin tuc noi bat', 'what's happening', "
-            "'latest headlines', 'tin moi nhat', 'news update'. Takes no arguments."
+            "Gets the latest Vietnamese trending headlines from 4 major "
+            "sources (VnExpress, TuoiTre, ThanhNien, DanTri), summarized. "
+            "Use when the user asks for 'trending news', 'tin tuc noi bat', "
+            "'what's happening', 'latest headlines', 'tin moi nhat', 'news "
+            "update'. Read the returned summary aloud to the user. Takes no "
+            "arguments."
         ),
         "parameters": {"type": "OBJECT", "properties": {}},
     },
@@ -1408,33 +1408,26 @@ class ParkerLive:
                 result = await loop.run_in_executor(None, lambda: now_playing(parameters=args, player=self.ui))
 
             elif name == "trending_news":
-                # Hard timeout — fetch/summarize/TTS all touch the network with
-                # no reliable upper bound of their own, and run_in_executor()
-                # has no timeout, so a slow/blocked call would leave Parker
-                # "thinking" forever. Bail out and report it instead.
-                #
-                # Must stay ABOVE the sum of every internal step's own worst
-                # case (RSS fetch ~40s + AI summarize ~20s + opening/snapping
-                # 4 tabs ~25s + TTS join(timeout=120) inside trending_news()):
-                # a shorter outer timeout would fire on every slow-but-normal
-                # run, and combined with the old "try again" wording that
-                # caused an infinite retry loop (fixed below too).
+                # Hard timeout — RSS fetch + AI summarize touch the network
+                # with no reliable upper bound of their own, and
+                # run_in_executor() has no timeout, so a slow/blocked call
+                # would leave Parker "thinking" forever.
                 try:
                     result = await asyncio.wait_for(
                         loop.run_in_executor(None, lambda: trending_news(parameters=args, player=self.ui)),
-                        timeout=210,
+                        timeout=45,
                     )
                 except asyncio.TimeoutError:
                     # Do NOT suggest retrying here — the model would read "try
                     # again" as an instruction to immediately call this tool
-                    # again, and since the same slow network/TTS conditions
-                    # are still there, it times out again -> infinite tool-
-                    # call loop. State the failure as final instead.
+                    # again, and if the network is genuinely down, it times
+                    # out again -> infinite tool-call loop. State the failure
+                    # as final instead.
                     result = ("Sir, the trending news feature timed out due to a "
-                              "network or TTS issue and has been cancelled. Do not "
-                              "retry automatically — tell the user it failed and "
-                              "wait for them to ask again later.")
-                    self.ui.write_log("ERR: trending_news timed out after 90s.")
+                              "network issue and has been cancelled. Do not retry "
+                              "automatically — tell the user it failed and wait "
+                              "for them to ask again later.")
+                    self.ui.write_log("ERR: trending_news timed out after 45s.")
 
             elif name == "trending_news_schedule":
                 act = (args.get("action") or "").lower().strip()
@@ -2240,13 +2233,23 @@ class ParkerLive:
             self.ui.write_log("SYS: Scheduled trending news starting…")
             try:
                 loop = asyncio.get_event_loop()
-                await asyncio.wait_for(
+                summary = await asyncio.wait_for(
                     loop.run_in_executor(
                         None, lambda: trending_news(parameters={}, player=self.ui)),
-                    timeout=210,  # keep in sync with the manual trending_news call
+                    timeout=45,  # keep in sync with the manual trending_news call
                 )
+                # trending_news() only fetches + summarizes now — unlike the
+                # manual tool-call path, nothing else reads the result aloud
+                # here, so send it into the session as a message to speak.
+                if self.session and summary:
+                    await self.session.send_client_content(
+                        turns={"parts": [{"text":
+                            "Read this trending news summary aloud naturally: "
+                            + summary}]},
+                        turn_complete=True,
+                    )
             except asyncio.TimeoutError:
-                self.ui.write_log("ERR: Scheduled trending news timed out after 210s.")
+                self.ui.write_log("ERR: Scheduled trending news timed out after 45s.")
             except Exception as e:
                 print(f"[Monitor] ⚠️ Scheduled trending news failed: {e}")
 
