@@ -1,4 +1,4 @@
-# setup_venv312.ps1 — create a Python 3.12 virtual environment for Parker.
+# setup_venv312.ps1 -- create a Python 3.12 virtual environment for Parker.
 #
 # Why: MediaPipe (used by gesture_control.py for hand-gesture play/pause)
 # officially only supports Python 3.9-3.12. If your system Python is newer
@@ -26,7 +26,7 @@ function Get-ExePath($cmd) {
 }
 
 # 1. Find an existing Python 3.12 install. Every path below either sets
-#    $py312Exe to a real, verified python.exe, or leaves it $null — never a
+#    $py312Exe to a real, verified python.exe, or leaves it $null -- never a
 #    launcher name plus a separate args string, which is what broke the
 #    earlier version of this script when the 'py' launcher wasn't present.
 $py312Exe = $null
@@ -40,7 +40,7 @@ if ($pyLauncher) {
             $py312Exe = $resolved.Trim()
         }
     } catch {
-        # py launcher exists but has no 3.12 registered — fall through.
+        # py launcher exists but has no 3.12 registered -- fall through.
     }
 }
 
@@ -50,7 +50,7 @@ if (-not $py312Exe) {
     if (Test-Path $direct) { $py312Exe = $direct }
 }
 
-# 1c. Not found anywhere — install it.
+# 1c. Not found anywhere -- install it.
 if (-not $py312Exe) {
     Write-Host "Python 3.12 not found. Installing via winget..." -ForegroundColor Yellow
     winget install --id Python.Python.3.12 -e --source winget
@@ -73,7 +73,7 @@ if (-not $py312Exe) {
 Write-Host "Using Python: $py312Exe" -ForegroundColor Green
 & $py312Exe --version
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "That Python executable doesn't run — aborting." -ForegroundColor Red
+    Write-Host "That Python executable doesn't run -- aborting." -ForegroundColor Red
     exit 1
 }
 
@@ -82,12 +82,12 @@ $venvPath = Join-Path (Get-Location) ".venv312"
 $venvPython = Join-Path $venvPath "Scripts\python.exe"
 
 if (Test-Path $venvPython) {
-    Write-Host "$venvPath already exists — skipping creation." -ForegroundColor Yellow
+    Write-Host "$venvPath already exists -- skipping creation." -ForegroundColor Yellow
 } else {
     Write-Host "Creating virtual environment at $venvPath ..." -ForegroundColor Cyan
     & $py312Exe -m venv $venvPath
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path $venvPython)) {
-        Write-Host "venv creation failed — $venvPython was not created." -ForegroundColor Red
+        Write-Host "venv creation failed -- $venvPython was not created." -ForegroundColor Red
         exit 1
     }
 }
@@ -97,7 +97,7 @@ Write-Host "Installing requirements (this can take a few minutes)..." -Foregroun
 & $venvPython -m pip install --upgrade pip
 & $venvPython -m pip install -r requirements.txt
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "pip install reported errors — check the output above." -ForegroundColor Yellow
+    Write-Host "pip install reported errors -- check the output above." -ForegroundColor Yellow
 }
 
 Write-Host ""

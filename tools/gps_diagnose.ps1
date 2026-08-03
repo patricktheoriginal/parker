@@ -1,4 +1,4 @@
-# gps_diagnose.ps1 — Diagnose Windows location access for Parker.
+# gps_diagnose.ps1 -- Diagnose Windows location access for Parker.
 # Run:  powershell -ExecutionPolicy Bypass -File tools\gps_diagnose.ps1
 
 $ErrorActionPreference = 'Continue'
