@@ -212,7 +212,16 @@ def _run_loop(player) -> None:
         _STATE["running"] = False
         return
 
-    cap = cv2.VideoCapture(_STATE["cap_index"])
+    # On Windows, OpenCV's default backend (MSMF) frequently ignores
+    # CAP_PROP_FPS / silently caps at 30 regardless of what's requested even
+    # when the camera supports more; DirectShow (CAP_DSHOW) generally honors
+    # these property sets correctly. Fall back to the default backend if
+    # DSHOW isn't available (e.g. non-Windows).
+    import platform as _platform
+    if _platform.system() == "Windows":
+        cap = cv2.VideoCapture(_STATE["cap_index"], cv2.CAP_DSHOW)
+    else:
+        cap = cv2.VideoCapture(_STATE["cap_index"])
     if not cap.isOpened():
         _log(player, "Couldn't open the camera for gesture control.")
         recognizer.close()
@@ -226,8 +235,15 @@ def _run_loop(player) -> None:
     # falls back to the closest supported mode.
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+    # Ask for 60fps to track fast swipes with less motion blur per frame.
+    # Actual achieved FPS depends on the camera/USB bandwidth at this
+    # resolution -- logged below so it's clear whether the request was
+    # honored rather than assumed.
+    cap.set(cv2.CAP_PROP_FPS, 60)
+    actual_fps = cap.get(cv2.CAP_PROP_FPS)
 
-    _log(player, "Gesture control camera started.")
+    _log(player, f"Gesture control camera started ({int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))}"
+                 f"x{int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))} @ {actual_fps:.0f}fps).")
 
     # Small preview window with live status text, so it's visibly obvious the
     # camera is on and actually seeing your hand -- pure background tracking
