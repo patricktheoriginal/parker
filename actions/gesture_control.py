@@ -273,7 +273,19 @@ def _run_loop(player) -> None:
     # configuration the manufacturer validated as reliable -- and only ask
     # for 720p at whatever FPS the camera naturally provides at that
     # resolution, without forcing a specific frame rate.
-    cap = cv2.VideoCapture(_STATE["cap_index"])
+    #
+    # The backend IS worth forcing though (unlike resolution/FPS): OpenCV's
+    # default Windows backend (MSMF) is known to take 1-3+ seconds just to
+    # initialize/warm up, especially on the first open after boot or after
+    # the camera's been idle -- that's the "camera takes a while to come up"
+    # delay. DirectShow (CAP_DSHOW) opens the same camera in its own default
+    # mode just as validly, but starts up close to instantly. Falls back to
+    # the platform default if DSHOW isn't available (e.g. non-Windows).
+    import platform as _platform
+    if _platform.system() == "Windows":
+        cap = cv2.VideoCapture(_STATE["cap_index"], cv2.CAP_DSHOW)
+    else:
+        cap = cv2.VideoCapture(_STATE["cap_index"])
     if not cap.isOpened():
         _log(player, "Couldn't open the camera for gesture control.")
         recognizer.close()
