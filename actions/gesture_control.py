@@ -212,38 +212,46 @@ def _run_loop(player) -> None:
         _STATE["running"] = False
         return
 
-    # On Windows, OpenCV's default backend (MSMF) frequently ignores
-    # CAP_PROP_FPS / silently caps at 30 regardless of what's requested even
-    # when the camera supports more; DirectShow (CAP_DSHOW) generally honors
-    # these property sets correctly. Fall back to the default backend if
-    # DSHOW isn't available (e.g. non-Windows).
-    import platform as _platform
-    if _platform.system() == "Windows":
-        cap = cv2.VideoCapture(_STATE["cap_index"], cv2.CAP_DSHOW)
-    else:
-        cap = cv2.VideoCapture(_STATE["cap_index"])
+    # Forcing 1280x720 @ 60fps (a previous change) backfired: many webcams
+    # can't sustain that combination over USB and the driver responds by
+    # degrading the actual image (blur/dark/dropped frames) rather than
+    # failing outright, which made detection worse across the board, not
+    # better. Let the camera open at its own default mode -- that's the
+    # configuration the manufacturer validated as reliable -- and only ask
+    # for 720p at whatever FPS the camera naturally provides at that
+    # resolution, without forcing a specific frame rate.
+    cap = cv2.VideoCapture(_STATE["cap_index"])
     if not cap.isOpened():
         _log(player, "Couldn't open the camera for gesture control.")
         recognizer.close()
         _STATE["running"] = False
         return
 
-    # Request a higher resolution than the OpenCV default (often 640x480) --
-    # a hand more than a couple meters away only covers a small patch of a
-    # low-res frame, giving the model too few pixels to classify the gesture
-    # confidently. Most webcams support 1280x720; if not, OpenCV silently
-    # falls back to the closest supported mode.
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-    # Ask for 60fps to track fast swipes with less motion blur per frame.
-    # Actual achieved FPS depends on the camera/USB bandwidth at this
-    # resolution -- logged below so it's clear whether the request was
-    # honored rather than assumed.
-    cap.set(cv2.CAP_PROP_FPS, 60)
-    actual_fps = cap.get(cv2.CAP_PROP_FPS)
+    default_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    default_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    default_fps = cap.get(cv2.CAP_PROP_FPS)
 
-    _log(player, f"Gesture control camera started ({int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))}"
-                 f"x{int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))} @ {actual_fps:.0f}fps).")
+    # Only step up to 720p if the camera's own default is meaningfully
+    # smaller (e.g. 640x480) -- if it already defaults to 720p or higher,
+    # leave it alone rather than re-requesting the same or a different mode.
+    if default_w < 1280:
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        # Verify the camera actually delivers a real frame at the new
+        # resolution before keeping it -- some drivers report success on
+        # cap.set() but then hand back garbage/black frames.
+        ok, test_frame = cap.read()
+        if not ok or test_frame is None or test_frame.mean() < 5:
+            _log(player, "720p request produced a bad frame -- reverting to "
+                         "the camera's default resolution.")
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, default_w)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, default_h)
+
+    actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    actual_fps = cap.get(cv2.CAP_PROP_FPS)
+    _log(player, f"Gesture control camera started ({actual_w}x{actual_h} "
+                 f"@ {actual_fps:.0f}fps).")
 
     # Small preview window with live status text, so it's visibly obvious the
     # camera is on and actually seeing your hand -- pure background tracking
