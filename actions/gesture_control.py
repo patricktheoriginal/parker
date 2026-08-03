@@ -10,11 +10,23 @@ Gestures:
   - Closed_Fist (make a fist, hold roughly still) -> play/pause
   - Open_Palm swiped RIGHT (open hand, fast horizontal move)          -> next track
   - Open_Palm swiped LEFT                                             -> previous track
+  - Thumb_Up, held                                                    -> volume rises
+    steadily while held, stopping automatically at 100% (holding
+    past max just keeps it at 100, doesn't error or wrap)
+  - Thumb_Down, held                                                  -> volume falls
+    steadily while held, stopping automatically at 0% (holding past
+    zero just keeps it at 0)
 
 The swipe direction comes from tracking the wrist landmark's x position
 over a short rolling window while an Open_Palm is held -- the gesture
 classifier alone can't tell direction, only "hand is open", so direction
 is layered on top of it.
+
+Thumb_Up/Thumb_Down ramp volume at a fixed rate per second for as long as
+the gesture is held (read the current system volume once via pycaw on
+each ramp start, then step it every frame) rather than mapping hand shape
+to an absolute level -- this matches the reference behavior of clamping
+cleanly at 0/100 instead of continuing to compute an out-of-range target.
 
 Runs a background thread that watches the webcam and shows a small preview
 window (so it's visible the camera is on and actually seeing your hand).
@@ -67,6 +79,27 @@ _SWIPE_MIN_DX = 0.3         # lowered from 0.35 -- at distance a hand's real
 # so a fist made in passing while gesturing something else doesn't fire).
 _FIST_HOLD_S = 0.25
 
+# Thumb_Up/Thumb_Down volume ramp (percent per second while held).
+_VOLUME_RAMP_PCT_PER_S = 40.0
+_VOLUME_UPDATE_INTERVAL_S = 0.1   # don't call volume_set() every single frame
+
+
+def _get_current_volume() -> int:
+    """Read the current system volume (0-100) via pycaw. Returns 50 (a
+    neutral guess) if it can't be read, so a ramp still has somewhere
+    sensible to start from instead of failing outright."""
+    try:
+        from ctypes import cast, POINTER
+        from comtypes import CLSCTX_ALL
+        from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+        devices = AudioUtilities.GetSpeakers()
+        interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+        vol = cast(interface, POINTER(IAudioEndpointVolume))
+        return round(vol.GetMasterVolumeLevelScalar() * 100)
+    except Exception as e:
+        print(f"[Gesture] Couldn't read current volume, assuming 50: {e}")
+        return 50
+
 
 def gesture_control(parameters: dict = None, player=None, session_memory=None) -> str:
     """Turn hand-gesture control on or off. parameters: {"action": "on"|"off"}"""
@@ -78,7 +111,8 @@ def gesture_control(parameters: dict = None, player=None, session_memory=None) -
         return _stop(player)
     return ("Sir, say 'turn on gesture control' or 'turn off gesture control'. "
             "Once on: make a fist to play/pause, swipe an open hand right for "
-            "next track, left for previous track.")
+            "next track, left for previous track, thumbs up to raise the "
+            "volume, thumbs down to lower it.")
 
 
 def _ensure_model(player=None) -> bool:
@@ -118,7 +152,8 @@ def _start(player=None) -> str:
     _STATE["thread"] = t
     t.start()
     return ("Gesture control is on, sir. Make a fist to play or pause, swipe "
-            "an open hand right for the next track, left for the previous one.")
+            "an open hand right for the next track, left for the previous one, "
+            "thumbs up for louder, thumbs down for quieter.")
 
 
 def _stop(player=None) -> str:
@@ -146,7 +181,7 @@ def _run_loop(player) -> None:
     from mediapipe.tasks import python as mp_python
     from mediapipe.tasks.python import vision as mp_vision
 
-    from actions.computer_settings import media_playpause, next_track, prev_track
+    from actions.computer_settings import media_playpause, next_track, prev_track, volume_set
 
     # Shared mutable state the LIVE_STREAM callback writes into -- the
     # callback runs on MediaPipe's own thread, not this loop, so results are
@@ -229,7 +264,6 @@ def _run_loop(player) -> None:
 
     default_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     default_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    default_fps = cap.get(cv2.CAP_PROP_FPS)
 
     # Only step up to 720p if the camera's own default is meaningfully
     # smaller (e.g. 640x480) -- if it already defaults to 720p or higher,
@@ -263,6 +297,7 @@ def _run_loop(player) -> None:
     flash_until = 0.0
     flash_label = ""
     start_time = time.monotonic()
+    last_frame_time = start_time   # used by the volume ramp's dt calculation
     # CLAHE (contrast-limited adaptive histogram equalization) boosts local
     # contrast in dim/backlit frames, which is a common reason the palm
     # detector misses a hand that's visually a bit dark or low-contrast
@@ -286,6 +321,15 @@ def _run_loop(player) -> None:
     # How long a fist has been continuously held, to avoid firing on a fist
     # that flashes past mid-gesture.
     fist_since: float | None = None
+
+    # Volume ramp state: current ramped value (float, for smooth per-frame
+    # stepping) and when it was last pushed to the OS, plus which direction
+    # (if any) is currently held so a stray one-frame gesture flicker doesn't
+    # restart the ramp from a freshly re-read system volume every time.
+    volume_pct: float | None = None
+    volume_direction: str | None = None   # "up" | "down" | None
+    last_volume_push = 0.0
+    last_volume_pushed_int: int | None = None
 
     try:
         while _STATE["running"]:
@@ -368,6 +412,46 @@ def _run_loop(player) -> None:
                         _log(player, f"Fist detected but playback control failed: {e}")
             else:
                 fist_since = None
+
+            # --- Thumb_Up/Thumb_Down: ramp volume up/down at a fixed rate
+            # while held, clamping cleanly at 100/0 instead of continuing to
+            # compute past the range. Fist/swipe cooldown doesn't apply here
+            # -- this is a continuous hold-to-change control, not a discrete
+            # one-shot trigger. ---
+            wants_direction = None
+            if confident and gesture == "Thumb_Up":
+                wants_direction = "up"
+            elif confident and gesture == "Thumb_Down":
+                wants_direction = "down"
+
+            if wants_direction:
+                if volume_direction != wants_direction:
+                    # Starting a fresh ramp (or switching direction) -- seed
+                    # from the real current system volume so the first frame
+                    # doesn't jump from a stale/unrelated value.
+                    volume_direction = wants_direction
+                    volume_pct = float(_get_current_volume())
+                    last_frame_time = now
+                else:
+                    dt = now - last_frame_time
+                    step = _VOLUME_RAMP_PCT_PER_S * dt
+                    volume_pct += step if wants_direction == "up" else -step
+                    volume_pct = max(0.0, min(100.0, volume_pct))
+                last_frame_time = now
+
+                if (now - last_volume_push) >= _VOLUME_UPDATE_INTERVAL_S:
+                    rounded = round(volume_pct)
+                    if rounded != last_volume_pushed_int:
+                        last_volume_pushed_int = rounded
+                        try:
+                            volume_set(rounded)
+                        except Exception as e:
+                            _log(player, f"Volume control failed: {e}")
+                    last_volume_push = now
+                flash_label = f"VOLUME {round(volume_pct)}%"
+                flash_until = now + 0.2
+            else:
+                volume_direction = None
 
             if show_preview:
                 h, w = frame.shape[:2]

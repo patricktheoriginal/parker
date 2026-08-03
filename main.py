@@ -432,13 +432,16 @@ TOOL_DECLARATIONS = [
         "description": (
             "Turns hand-gesture camera control on or off. When on: making a "
             "fist toggles play/pause; swiping an open hand RIGHT skips to the "
-            "next track; swiping an open hand LEFT goes to the previous track "
-            "— on whatever music player is active, no voice command needed "
-            "for those. Shows a small camera preview window while active. "
-            "OFF by default (uses the camera continuously while on). Use when "
-            "the user says 'turn on gesture control', 'enable hand gestures "
-            "for music', 'turn off gesture control', 'stop watching for "
-            "gestures'. action: 'on' or 'off'."
+            "next track; swiping an open hand LEFT goes to the previous track; "
+            "holding a thumbs-up raises the volume steadily until released or "
+            "it hits 100%; holding a thumbs-down lowers it steadily until "
+            "released or it hits 0% (it just holds there, doesn't wrap or "
+            "error) -- on whatever music player is active, no voice command "
+            "needed for those. Shows a small camera preview window while "
+            "active. OFF by default (uses the camera continuously while on). "
+            "Use when the user says 'turn on gesture control', 'enable hand "
+            "gestures for music', 'turn off gesture control', 'stop watching "
+            "for gestures'. action: 'on' or 'off'."
         ),
         "parameters": {"type": "OBJECT", "properties": {
             "action": {"type": "STRING", "description": "'on' to start watching for hand gestures, 'off' to stop."}
