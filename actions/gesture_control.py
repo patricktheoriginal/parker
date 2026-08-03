@@ -16,16 +16,19 @@ Gestures:
   - Thumb_Down, held                                                  -> volume falls
     steadily while held, stopping automatically at 0% (holding past
     zero just keeps it at 0)
-  - Pointing_Up (index finger extended), held briefly on a window -> picks
-    that window up; moving your hand while still holding Pointing_Up drags
-    it around the screen in real time; dropping the gesture releases it in
-    place. While a drag is active, every other gesture is suppressed (a
-    dragging hand naturally passes through shapes that look like a fist or
-    open palm, and those firing mid-drag would be a bad time to also
-    trigger play/pause or a track skip). The picked-up window also becomes
-    the target for a follow-up voice command (point_window, in
-    computer_settings.py), e.g. "snap that window left" after a quick
-    point without dragging.
+  - Pointing_Up (index finger extended), held briefly on a window ->
+    SELECTS that window and only that -- it never drags anything by
+    itself. The selected window becomes the target for a follow-up voice
+    command (point_window, in computer_settings.py), e.g. "snap that
+    window left".
+  - Closed_Fist made within _DRAG_ARM_WINDOW_S of a fresh selection ->
+    picks the selected window up and DRAGS it: moving your hand while
+    still holding the fist moves the window with it in real time;
+    opening your hand releases it in place. A fist made *without* a
+    recent selection is the plain play/pause gesture instead -- the two
+    are told apart purely by timing after a Pointing_Up select, so
+    there's no ambiguity about which one you're doing. While a drag is
+    active, every other gesture (swipe, thumbs) is suppressed.
 
 The swipe direction comes from tracking the wrist landmark's x position
 over a short rolling window while an Open_Palm is held -- the gesture
@@ -76,6 +79,12 @@ _POINT_HOLD_S = 0.35     # how long Pointing_Up must be held before it counts
 _POINT_STALE_S = 10.0     # a point older than this no longer counts as "the"
                           # target -- avoids acting on a window pointed at
                           # long ago and forgotten about
+_DRAG_ARM_WINDOW_S = 3.0   # a Closed_Fist made within this long of a fresh
+                          # Pointing_Up selection is treated as "grab and
+                          # drag the selected window" instead of the normal
+                          # play/pause fist -- keeps the two gestures fully
+                          # unambiguous (same hand shape, different meaning
+                          # only based on what just happened before it)
 
 _MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/"
              "gesture_recognizer/gesture_recognizer/float16/latest/"
@@ -157,9 +166,10 @@ def gesture_control(parameters: dict = None, player=None, session_memory=None) -
     return ("Sir, say 'turn on gesture control' or 'turn off gesture control'. "
             "Once on: make a fist to play/pause, swipe an open hand right for "
             "next track, left for previous track, thumbs up to raise the "
-            "volume, thumbs down to lower it, or hold your index finger up "
-            "on a window to pick it up and drag it around, or point at it "
-            "briefly and tell me to snap it left, right, or center.")
+            "volume, thumbs down to lower it. To move a window: point your "
+            "index finger at it to select it, then either make a fist within "
+            "a few seconds to grab and drag it around, or tell me to snap it "
+            "left, right, or center.")
 
 
 def _ensure_model(player=None) -> bool:
@@ -200,9 +210,10 @@ def _start(player=None) -> str:
     t.start()
     return ("Gesture control is on, sir. Make a fist to play or pause, swipe "
             "an open hand right for the next track, left for the previous one, "
-            "thumbs up for louder, thumbs down for quieter, or hold your "
-            "index finger up on a window to pick it up and drag it, or point "
-            "and tell me to snap it left, right, or center.")
+            "thumbs up for louder, thumbs down for quieter. To move a window: "
+            "point at it to select it, then make a fist within a few seconds "
+            "to grab and drag it, or tell me to snap it left, right, or "
+            "center.")
 
 
 def _stop(player=None) -> str:
@@ -491,13 +502,17 @@ def _run_loop(player) -> None:
     fist_since: float | None = None
     # Same idea for Pointing_Up -- how long it's been continuously held.
     point_since: float | None = None
-    # Drag state: once Pointing_Up has been held past _POINT_HOLD_S on a
-    # window, that window is "picked up" and follows the fingertip until
-    # Pointing_Up is released (hand drops the gesture or leaves frame).
-    # drag_last_tip is the previous frame's fingertip position, in *pixels*
-    # (not normalized 0-1) -- normalized deltas would need re-scaling by
-    # screen size every frame anyway, so pixels are computed once per frame
-    # and reused directly as the SetWindowPos offset.
+    # When the last Pointing_Up selection completed (_POINT_HOLD_S reached) --
+    # used to decide whether a Closed_Fist right after it means "grab and
+    # drag the selection" instead of the normal play/pause fist.
+    selected_at: float = 0.0
+    # Drag state: once a Closed_Fist has been recognized as a grab (per
+    # selected_at/_DRAG_ARM_WINDOW_S above), the selected window is "picked
+    # up" and follows the hand until the fist opens. drag_last_tip is the
+    # previous frame's hand position, in *pixels* (not normalized 0-1) --
+    # normalized deltas would need re-scaling by screen size every frame
+    # anyway, so pixels are computed once per frame and reused directly as
+    # the SetWindowPos offset.
     drag_hwnd = None
     drag_last_tip_px: tuple[float, float] | None = None
 
@@ -573,56 +588,35 @@ def _run_loop(player) -> None:
             confident = score >= _MIN_CONFIDENCE
             cooling_down = (now - last_trigger) <= _COOLDOWN_S
 
-            # --- Pointing_Up: hold on a window to "pick it up", then move
-            # your hand to drag it around; releasing the gesture (or losing
-            # the hand) drops it in place. Handled before the other gestures
-            # and, while a drag is active, suppresses them entirely -- a
-            # dragging hand naturally passes through shapes that look like a
-            # fist or open palm, and letting those fire mid-drag would
-            # trigger play/pause or a track skip in the middle of moving a
-            # window. ---
+            # --- Drag in progress: a Closed_Fist grabbed the current
+            # selection (see the Closed_Fist block below) -- follow the hand
+            # every frame until it opens. Handled first and, while active,
+            # suppresses every other gesture this frame -- a moving fist
+            # naturally passes through shapes that look like other gestures,
+            # and those firing mid-drag would be a bad surprise. ---
             dragging = drag_hwnd is not None
-            if confident and gesture == "Pointing_Up" and latest["index_tip"] is not None:
-                tip_x, tip_y = latest["index_tip"]
-                tip_px = ((1.0 - tip_x) * screen_w, tip_y * screen_h)  # mirror
-                                                                          # to match preview flip, same as _window_under_point
-                if point_since is None:
-                    point_since = now
-                elif not dragging and (now - point_since) >= _POINT_HOLD_S:
-                    # Hold duration crossed -- pick up whatever's under the
-                    # fingertip right now and start dragging it.
-                    hwnd, title = _window_under_point(tip_x, tip_y)
-                    if hwnd:
-                        drag_hwnd = hwnd
-                        drag_last_tip_px = tip_px
-                        _POINTED["hwnd"] = hwnd
-                        _POINTED["title"] = title
-                        _POINTED["at"] = now
-                        flash_label = f"DRAGGING: {title[:30]}"
-                        flash_until = now + 0.3
-                        dragging = True
-                elif dragging:
+            if dragging:
+                if confident and gesture == "Closed_Fist" and latest["index_tip"] is not None:
+                    tip_x, tip_y = latest["index_tip"]
+                    tip_px = ((1.0 - tip_x) * screen_w, tip_y * screen_h)  # mirror,
+                                                                              # matches the preview flip
                     dx = tip_px[0] - drag_last_tip_px[0]
                     dy = tip_px[1] - drag_last_tip_px[1]
                     drag_last_tip_px = tip_px
                     if (dx or dy) and not _move_window_by(drag_hwnd, int(dx), int(dy)):
-                        # Window's gone (e.g. closed mid-drag) -- drop it.
-                        drag_hwnd = None
+                        drag_hwnd = None   # window's gone (e.g. closed mid-drag)
                         drag_last_tip_px = None
                         dragging = False
                     else:
                         flash_label = "DRAGGING"
                         flash_until = now + 0.2
-            else:
-                point_since = None
-                if dragging:
+                else:
                     _log(player, "Window drag released.")
-                drag_hwnd = None
-                drag_last_tip_px = None
-                dragging = False
+                    drag_hwnd = None
+                    drag_last_tip_px = None
+                    dragging = False
 
             if dragging:
-                # Skip every other gesture this frame -- see comment above.
                 elapsed = time.monotonic() - loop_start
                 remaining = target_frame_time - elapsed
                 if remaining > 0:
@@ -636,6 +630,31 @@ def _run_loop(player) -> None:
                     if cv2.waitKey(1) & 0xFF == ord("q"):
                         break
                 continue
+
+            # --- Pointing_Up: SELECTS the window under the fingertip after a
+            # brief deliberate hold. This is the only thing Pointing_Up does
+            # -- it never drags by itself. The selection is picked up for
+            # dragging separately, by a Closed_Fist made shortly after (see
+            # below), or acted on by a voice command (point_window). ---
+            if confident and gesture == "Pointing_Up" and latest["index_tip"] is not None:
+                if point_since is None:
+                    point_since = now
+                elif (now - point_since) >= _POINT_HOLD_S:
+                    tip_x, tip_y = latest["index_tip"]
+                    hwnd, title = _window_under_point(tip_x, tip_y)
+                    if hwnd:
+                        _POINTED["hwnd"] = hwnd
+                        _POINTED["title"] = title
+                        _POINTED["at"] = now
+                        selected_at = now
+                        flash_label = f"SELECTED: {title[:30]}"
+                        flash_until = now + 0.4
+                        point_since = now   # re-arm the hold timer so a
+                                             # continued point re-selects at
+                                             # most once every _POINT_HOLD_S,
+                                             # not every single frame
+            else:
+                point_since = None
 
             # --- Open_Palm swipe: track wrist x continuously whenever a hand
             # is visible (regardless of the per-frame gesture label -- see
@@ -668,20 +687,35 @@ def _run_loop(player) -> None:
                     except Exception as e:
                         _log(player, f"Swipe detected but {action_name} failed: {e}")
 
-            # --- Closed_Fist: play/pause after a brief deliberate hold. ---
+            # --- Closed_Fist: two different meanings depending on timing --
+            # if there's a fresh Pointing_Up selection (within
+            # _DRAG_ARM_WINDOW_S), this fist GRABS it and starts a drag
+            # instead of the normal play/pause. That's the only thing that
+            # tells the two apart -- same hand shape either way -- so a fist
+            # made with no recent selection is unambiguously play/pause. ---
             if confident and gesture == "Closed_Fist":
                 if fist_since is None:
                     fist_since = now
                 elif not cooling_down and (now - fist_since) >= _FIST_HOLD_S:
-                    last_trigger = now
-                    fist_since = None
-                    flash_label = "PLAY/PAUSE"
-                    flash_until = now + 0.4
-                    try:
-                        media_playpause()
-                        _log(player, "Fist detected -- toggled play/pause.")
-                    except Exception as e:
-                        _log(player, f"Fist detected but playback control failed: {e}")
+                    hwnd, title = _POINTED["hwnd"], _POINTED["title"]
+                    if hwnd and (now - selected_at) <= _DRAG_ARM_WINDOW_S and latest["index_tip"] is not None:
+                        fist_since = None
+                        tip_x, tip_y = latest["index_tip"]
+                        drag_hwnd = hwnd
+                        drag_last_tip_px = ((1.0 - tip_x) * screen_w, tip_y * screen_h)
+                        flash_label = f"GRABBED: {title[:30]}"
+                        flash_until = now + 0.3
+                        _log(player, f"Fist grabbed selection -- dragging {title}.")
+                    else:
+                        last_trigger = now
+                        fist_since = None
+                        flash_label = "PLAY/PAUSE"
+                        flash_until = now + 0.4
+                        try:
+                            media_playpause()
+                            _log(player, "Fist detected -- toggled play/pause.")
+                        except Exception as e:
+                            _log(player, f"Fist detected but playback control failed: {e}")
             else:
                 fist_since = None
 
