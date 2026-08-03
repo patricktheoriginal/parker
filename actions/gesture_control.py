@@ -263,6 +263,14 @@ def _run_loop(player) -> None:
     flash_until = 0.0
     flash_label = ""
     start_time = time.monotonic()
+    # CLAHE (contrast-limited adaptive histogram equalization) boosts local
+    # contrast in dim/backlit frames, which is a common reason the palm
+    # detector misses a hand that's visually a bit dark or low-contrast
+    # against the background -- unlike forcing camera FPS/resolution (which
+    # backfired by exceeding what the camera driver could sustain), this only
+    # transforms the frame already captured and adapts per-frame, so it can't
+    # make a good frame worse the way the earlier camera changes did.
+    _clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
 
     # Rolling (timestamp, wrist_x) samples of ANY tracked hand position, used
     # to detect swipe direction/distance once we've also seen Open_Palm
@@ -287,7 +295,21 @@ def _run_loop(player) -> None:
                 continue
 
             frame = cv2.flip(frame, 1)  # mirror, so it feels natural
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+            # Only apply CLAHE when the frame is actually dim -- on a
+            # well-lit frame it does nothing useful and just costs CPU time
+            # every single frame for no benefit.
+            gray_mean = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).mean()
+            if gray_mean < 100:
+                lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
+                l, a, b = cv2.split(lab)
+                l = _clahe.apply(l)
+                enhanced = cv2.merge((l, a, b))
+                detect_frame = cv2.cvtColor(enhanced, cv2.COLOR_LAB2BGR)
+            else:
+                detect_frame = frame
+
+            rgb = cv2.cvtColor(detect_frame, cv2.COLOR_BGR2RGB)
             mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
             ts_ms = int((time.monotonic() - start_time) * 1000)
             recognizer.recognize_async(mp_image, ts_ms)
