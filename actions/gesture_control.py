@@ -89,12 +89,18 @@ def _get_current_volume() -> int:
     neutral guess) if it can't be read, so a ramp still has somewhere
     sensible to start from instead of failing outright."""
     try:
-        from ctypes import cast, POINTER
-        from comtypes import CLSCTX_ALL
         from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
         devices = AudioUtilities.GetSpeakers()
-        interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-        vol = cast(interface, POINTER(IAudioEndpointVolume))
+        # Newer pycaw wraps the COM device in an AudioDevice object with no
+        # .Activate() method -- it exposes the endpoint volume interface
+        # directly as .EndpointVolume instead. Try that first; fall back to
+        # the old Activate()+cast() path for older pycaw versions.
+        vol = getattr(devices, "EndpointVolume", None)
+        if vol is None:
+            from ctypes import cast, POINTER
+            from comtypes import CLSCTX_ALL
+            interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+            vol = cast(interface, POINTER(IAudioEndpointVolume))
         return round(vol.GetMasterVolumeLevelScalar() * 100)
     except Exception as e:
         print(f"[Gesture] Couldn't read current volume, assuming 50: {e}")
