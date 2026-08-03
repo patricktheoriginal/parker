@@ -47,12 +47,21 @@ _MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/"
              "gesture_recognizer.task")
 _MODEL_PATH = Path.home() / ".parker" / "mediapipe" / "gesture_recognizer.task"
 
-_MIN_CONFIDENCE = 0.6
+_MIN_CONFIDENCE = 0.45     # lowered from 0.6 -- a hand at distance/in motion
+                            # scores lower even when it's genuinely the right
+                            # gesture; the classifier's own confidence is
+                            # already fairly conservative
 _COOLDOWN_S = 1.2          # ignore further triggers for this long after one fires
 
 # Swipe detection (Open_Palm + fast horizontal move).
-_SWIPE_WINDOW_S = 0.6       # look at wrist movement over this recent window
-_SWIPE_MIN_DX = 0.35        # must cross at least this much of the frame width
+_SWIPE_WINDOW_S = 0.8       # widened from 0.6 -- a fast swipe crosses the
+                            # frame in well under this, but a wider window
+                            # tolerates the classifier needing a couple of
+                            # frames to reacquire Open_Palm after motion blur
+_SWIPE_MIN_DX = 0.3         # lowered from 0.35 -- at distance a hand's real
+                            # swipe covers less of the (wide) frame in
+                            # normalized coordinates even for the same
+                            # physical arm movement
 
 # Fist-hold detection (Closed_Fist, deliberately NOT moving much, held briefly
 # so a fist made in passing while gesturing something else doesn't fire).
@@ -181,8 +190,18 @@ def _run_loop(player) -> None:
         base_options=mp_python.BaseOptions(model_asset_path=str(_MODEL_PATH)),
         running_mode=mp_vision.RunningMode.LIVE_STREAM,
         num_hands=1,
-        min_hand_detection_confidence=0.6,
-        min_tracking_confidence=0.5,
+        # Lowered from 0.6/0.5 -- a hand a few meters from the camera only
+        # covers a small patch of pixels, and the stricter defaults missed it
+        # entirely at distance. min_tracking_confidence in particular governs
+        # whether MediaPipe keeps following a hand between frames once found;
+        # a fast-moving (motion-blurred) hand drops below a high threshold
+        # and loses tracking, which is the other half of "fast swipes aren't
+        # detected" (the gesture classifier also needs a clean detection each
+        # time tracking is lost and has to re-run palm detection from scratch,
+        # which is slower and more likely to miss a quick motion).
+        min_hand_detection_confidence=0.4,
+        min_tracking_confidence=0.3,
+        min_hand_presence_confidence=0.4,
         result_callback=_on_result,
     )
 
@@ -199,6 +218,14 @@ def _run_loop(player) -> None:
         recognizer.close()
         _STATE["running"] = False
         return
+
+    # Request a higher resolution than the OpenCV default (often 640x480) --
+    # a hand more than a couple meters away only covers a small patch of a
+    # low-res frame, giving the model too few pixels to classify the gesture
+    # confidently. Most webcams support 1280x720; if not, OpenCV silently
+    # falls back to the closest supported mode.
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 
     _log(player, "Gesture control camera started.")
 
