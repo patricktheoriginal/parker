@@ -143,15 +143,36 @@ def _run_loop(player) -> None:
     # callback runs on MediaPipe's own thread, not this loop, so results are
     # picked up on the next frame we render rather than awaited directly.
     latest = {"gesture": None, "score": 0.0, "hand_seen": False, "wrist_x": None}
+    _debug_logged = {"once": False}
 
     def _on_result(result, output_image, timestamp_ms):
-        if result.gestures:
-            top = result.gestures[0][0]   # best gesture for the first hand
-            latest["gesture"] = top.category_name
-            latest["score"] = top.score
-            latest["hand_seen"] = True
-            latest["wrist_x"] = result.hand_landmarks[0][0].x if result.hand_landmarks else None
-        else:
+        try:
+            if result.gestures:
+                top = result.gestures[0][0]   # best gesture for the first hand
+                latest["gesture"] = top.category_name
+                latest["score"] = top.score
+                latest["hand_seen"] = True
+                # hand_landmarks holds one list of 21 landmarks per detected
+                # hand; landmark 0 is the wrist. Guard defensively -- this
+                # field name has moved between MediaPipe releases, and a
+                # silent AttributeError here would kill wrist tracking (and
+                # therefore swipe direction) while gesture detection kept
+                # working fine, which is hard to tell apart from "swipe
+                # detection is broken" without this fallback + log.
+                lm = getattr(result, "hand_landmarks", None)
+                latest["wrist_x"] = lm[0][0].x if lm else None
+                if not _debug_logged["once"]:
+                    _debug_logged["once"] = True
+                    print(f"[Gesture] debug: gesture={top.category_name} "
+                          f"score={top.score:.2f} wrist_x={latest['wrist_x']} "
+                          f"hand_landmarks_present={lm is not None}")
+            else:
+                latest["gesture"] = None
+                latest["hand_seen"] = False
+                latest["wrist_x"] = None
+        except Exception as e:
+            # Never let a callback error silently stop future callbacks.
+            print(f"[Gesture] result callback error: {e}")
             latest["gesture"] = None
             latest["hand_seen"] = False
             latest["wrist_x"] = None
@@ -192,9 +213,17 @@ def _run_loop(player) -> None:
     flash_label = ""
     start_time = time.monotonic()
 
-    # Rolling (timestamp, wrist_x) samples while an Open_Palm is held, used to
-    # detect swipe direction/distance.
-    palm_history: list[tuple[float, float]] = []
+    # Rolling (timestamp, wrist_x) samples of ANY tracked hand position, used
+    # to detect swipe direction/distance once we've also seen Open_Palm
+    # recently. Tracking position independently of the per-frame gesture
+    # label (rather than clearing history the instant a single frame isn't
+    # classified as Open_Palm) matters because a fast swipe motion-blurs the
+    # hand, and the classifier can drop out or flicker to a different label
+    # for a frame or two mid-swipe -- clearing on every miss meant the
+    # history almost never accumulated enough samples to cross the distance
+    # threshold, and the swipe silently never fired.
+    wrist_history: list[tuple[float, float]] = []
+    last_open_palm_seen = 0.0
     # How long a fist has been continuously held, to avoid firing on a fist
     # that flashes past mid-gesture.
     fist_since: float | None = None
@@ -219,19 +248,24 @@ def _run_loop(player) -> None:
             confident = score >= _MIN_CONFIDENCE
             cooling_down = (now - last_trigger) <= _COOLDOWN_S
 
-            # --- Open_Palm: track wrist x to detect a left/right swipe. ---
-            if confident and gesture == "Open_Palm" and wrist_x is not None:
-                palm_history.append((now, wrist_x))
-            else:
-                palm_history.clear()
-            palm_history[:] = [(t, x) for t, x in palm_history if now - t <= _SWIPE_WINDOW_S]
+            # --- Open_Palm swipe: track wrist x continuously whenever a hand
+            # is visible (regardless of the per-frame gesture label -- see
+            # the comment on wrist_history above), and require Open_Palm to
+            # have been seen recently as confirmation this is a deliberate
+            # palm swipe rather than incidental hand movement. ---
+            if confident and gesture == "Open_Palm":
+                last_open_palm_seen = now
+            if wrist_x is not None:
+                wrist_history.append((now, wrist_x))
+            wrist_history[:] = [(t, x) for t, x in wrist_history if now - t <= _SWIPE_WINDOW_S]
+            palm_recent = (now - last_open_palm_seen) <= _SWIPE_WINDOW_S
 
-            if not cooling_down and len(palm_history) >= 2:
-                xs = [x for _, x in palm_history]
+            if not cooling_down and palm_recent and len(wrist_history) >= 2:
+                xs = [x for _, x in wrist_history]
                 dx = xs[-1] - xs[0]   # signed: positive = moved right
                 if abs(dx) >= _SWIPE_MIN_DX:
                     last_trigger = now
-                    palm_history.clear()
+                    wrist_history.clear()
                     if dx > 0:
                         flash_label = "NEXT"
                         action_fn, action_name = next_track, "next track"
