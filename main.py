@@ -56,6 +56,7 @@ from actions.make_call         import make_call
 from actions.reminder          import reminder
 from actions.computer_settings import computer_settings
 from actions.screen_processor  import _capture_camera, _capture_screen
+from actions.gesture_control   import gesture_control
 from actions.youtube_video     import youtube_video
 from actions.desktop           import desktop_control
 from actions.browser_control   import browser_control
@@ -425,6 +426,21 @@ TOOL_DECLARATIONS = [
             "pause/volume, use computer_settings instead. Takes no arguments."
         ),
         "parameters": {"type": "OBJECT", "properties": {}},
+    },
+    {
+        "name": "gesture_control",
+        "description": (
+            "Turns hand-swipe camera gesture control on or off. When on, "
+            "swiping a hand across the webcam toggles play/pause on whatever "
+            "music player is active — no voice command needed for that. OFF "
+            "by default (uses the camera continuously while on). Use when "
+            "the user says 'turn on gesture control', 'enable hand gestures "
+            "for music', 'turn off gesture control', 'stop watching for "
+            "gestures'. action: 'on' or 'off'."
+        ),
+        "parameters": {"type": "OBJECT", "properties": {
+            "action": {"type": "STRING", "description": "'on' to start watching for swipe gestures, 'off' to stop."}
+        }, "required": ["action"]},
     },
     {
         "name": "trending_news",
@@ -1406,6 +1422,9 @@ class ParkerLive:
 
             elif name == "now_playing":
                 result = await loop.run_in_executor(None, lambda: now_playing(parameters=args, player=self.ui))
+
+            elif name == "gesture_control":
+                result = await loop.run_in_executor(None, lambda: gesture_control(parameters=args, player=self.ui))
 
             elif name == "trending_news":
                 # Hard timeout — RSS fetch + AI summarize touch the network
