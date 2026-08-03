@@ -3,26 +3,18 @@ gesture_control.py -- camera hand-gesture control for music playback.
 
 Uses MediaPipe's current Tasks API (GestureRecognizer), not the deprecated
 `mp.solutions.hands` legacy API -- Tasks is Google's actively maintained
-gesture pipeline. Its hand_landmarks output (21 points per hand) is used
-directly for continuous tracking rather than relying only on its canned
-gesture labels, since the controls here are motion/shape-based rather than
-static poses.
+gesture pipeline with a purpose-built classifier instead of hand-rolled
+landmark math, and is what MediaPipe recommends going forward.
 
-Controls (all relative to the hand's OWN size/orientation, so they work at
-any distance from the camera or hand size):
-  - Twist the wrist right/left (forearm stays roughly still, the hand
-    rotates -- like turning a doorknob) -> next / previous track.
-    Measured as the angle between the wrist->middle-finger-base vector
-    (the hand's own "up" axis) and the wrist->thumb-base vector; a fast
-    change in that angle is a twist, independent of where the hand is
-    positioned in frame.
-  - Gradually opening the hand (fingers extending) -> volume goes up,
-    tracking how open the hand is in real time.
-    Gradually closing the hand (fingers curling into a fist)
-                                        -> volume goes down, same way.
-    Measured as total fingertip-to-wrist distance, normalized by the
-    hand's own palm size (wrist-to-middle-finger-base distance) so it
-    doesn't depend on how far the hand is from the camera.
+Gestures:
+  - Closed_Fist (make a fist, hold roughly still) -> play/pause
+  - Open_Palm swiped RIGHT (open hand, fast horizontal move)          -> next track
+  - Open_Palm swiped LEFT                                             -> previous track
+
+The swipe direction comes from tracking the wrist landmark's x position
+over a short rolling window while an Open_Palm is held -- the gesture
+classifier alone can't tell direction, only "hand is open", so direction
+is layered on top of it.
 
 Runs a background thread that watches the webcam and shows a small preview
 window (so it's visible the camera is on and actually seeing your hand).
@@ -38,7 +30,6 @@ tools/setup_venv312.ps1 if your system Python is newer. The gesture model
 that. Fails soft with a clear message if anything isn't available.
 """
 
-import math
 import threading
 import time
 import urllib.request
@@ -56,29 +47,25 @@ _MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/"
              "gesture_recognizer.task")
 _MODEL_PATH = Path.home() / ".parker" / "mediapipe" / "gesture_recognizer.task"
 
-# Landmark indices (MediaPipe Hands 21-point model).
-_WRIST = 0
-_THUMB_BASE = 2
-_MIDDLE_BASE = 9
-_FINGERTIPS = (4, 8, 12, 16, 20)   # thumb, index, middle, ring, pinky tips
+_MIN_CONFIDENCE = 0.45     # lowered from 0.6 -- a hand at distance/in motion
+                            # scores lower even when it's genuinely the right
+                            # gesture; the classifier's own confidence is
+                            # already fairly conservative
+_COOLDOWN_S = 1.2          # ignore further triggers for this long after one fires
 
-_MIN_HAND_CONF = 0.4
-_MIN_TRACK_CONF = 0.3
-_MIN_PRESENCE_CONF = 0.4
+# Swipe detection (Open_Palm + fast horizontal move).
+_SWIPE_WINDOW_S = 0.8       # widened from 0.6 -- a fast swipe crosses the
+                            # frame in well under this, but a wider window
+                            # tolerates the classifier needing a couple of
+                            # frames to reacquire Open_Palm after motion blur
+_SWIPE_MIN_DX = 0.3         # lowered from 0.35 -- at distance a hand's real
+                            # swipe covers less of the (wide) frame in
+                            # normalized coordinates even for the same
+                            # physical arm movement
 
-# --- Wrist twist (next/previous) ---
-_TWIST_WINDOW_S = 0.5       # look at angle change over this recent window
-_TWIST_MIN_DELTA_DEG = 35   # angle must swing at least this many degrees
-_TWIST_COOLDOWN_S = 1.0     # ignore further twists for this long after one fires
-
-# --- Openness -> volume ---
-# Openness is normalized fingertip-to-wrist distance (divided by palm size),
-# roughly 1.0 for a relaxed open hand and much smaller for a closed fist --
-# calibrated generously since exact values vary by hand shape/camera angle.
-_OPENNESS_MIN = 1.0     # at/below this -> treated as fully closed (0% contribution)
-_OPENNESS_MAX = 2.2     # at/above this -> treated as fully open (100% contribution)
-_VOLUME_SMOOTHING = 0.25   # 0..1, higher = follows the hand faster/less smooth
-_VOLUME_UPDATE_MIN_INTERVAL_S = 0.15   # don't spam volume_set faster than this
+# Fist-hold detection (Closed_Fist, deliberately NOT moving much, held briefly
+# so a fist made in passing while gesturing something else doesn't fire).
+_FIST_HOLD_S = 0.25
 
 
 def gesture_control(parameters: dict = None, player=None, session_memory=None) -> str:
@@ -90,8 +77,8 @@ def gesture_control(parameters: dict = None, player=None, session_memory=None) -
     if action in ("off", "stop", "disable", "deactivate", "false", "0"):
         return _stop(player)
     return ("Sir, say 'turn on gesture control' or 'turn off gesture control'. "
-            "Once on: twist your wrist right for next track, left for "
-            "previous; open your hand to raise volume, close it to lower.")
+            "Once on: make a fist to play/pause, swipe an open hand right for "
+            "next track, left for previous track.")
 
 
 def _ensure_model(player=None) -> bool:
@@ -130,9 +117,8 @@ def _start(player=None) -> str:
     t = threading.Thread(target=_run_loop, args=(player,), daemon=True)
     _STATE["thread"] = t
     t.start()
-    return ("Gesture control is on, sir. Twist your wrist right for next "
-            "track, left for previous. Open your hand to raise volume, "
-            "close it to lower.")
+    return ("Gesture control is on, sir. Make a fist to play or pause, swipe "
+            "an open hand right for the next track, left for the previous one.")
 
 
 def _stop(player=None) -> str:
@@ -154,87 +140,68 @@ def _log(player, msg: str):
             pass
 
 
-def _hand_angle_deg(lm) -> float:
-    """Angle (degrees) of the wrist->thumb-base vector relative to the
-    wrist->middle-finger-base vector -- the hand's own "up" axis. This
-    rotates as the wrist twists, independent of where the hand is
-    positioned or how the arm is angled, because it's measured relative to
-    the hand's own geometry rather than the frame."""
-    wx, wy = lm[_WRIST].x, lm[_WRIST].y
-    mx, my = lm[_MIDDLE_BASE].x, lm[_MIDDLE_BASE].y
-    tx, ty = lm[_THUMB_BASE].x, lm[_THUMB_BASE].y
-    # Angle of the "up" axis and the thumb vector, both from the wrist.
-    up_angle = math.atan2(my - wy, mx - wx)
-    thumb_angle = math.atan2(ty - wy, tx - wx)
-    delta = math.degrees(thumb_angle - up_angle)
-    # Normalize to [-180, 180] so it doesn't wrap around discontinuously.
-    while delta > 180:
-        delta -= 360
-    while delta < -180:
-        delta += 360
-    return delta
-
-
-def _hand_openness(lm) -> float:
-    """Sum of fingertip-to-wrist distances, normalized by palm size
-    (wrist-to-middle-finger-base distance) so the value doesn't depend on
-    how far the hand is from the camera or how large the hand is."""
-    wx, wy = lm[_WRIST].x, lm[_WRIST].y
-    mx, my = lm[_MIDDLE_BASE].x, lm[_MIDDLE_BASE].y
-    palm_size = math.hypot(mx - wx, my - wy)
-    if palm_size < 1e-6:
-        return 0.0
-    total = 0.0
-    for idx in _FINGERTIPS:
-        fx, fy = lm[idx].x, lm[idx].y
-        total += math.hypot(fx - wx, fy - wy)
-    return (total / len(_FINGERTIPS)) / palm_size
-
-
 def _run_loop(player) -> None:
     import cv2
     import mediapipe as mp
     from mediapipe.tasks import python as mp_python
     from mediapipe.tasks.python import vision as mp_vision
 
-    from actions.computer_settings import next_track, prev_track, volume_set
+    from actions.computer_settings import media_playpause, next_track, prev_track
 
     # Shared mutable state the LIVE_STREAM callback writes into -- the
     # callback runs on MediaPipe's own thread, not this loop, so results are
     # picked up on the next frame we render rather than awaited directly.
-    latest = {"hand_seen": False, "angle": None, "openness": None}
+    latest = {"gesture": None, "score": 0.0, "hand_seen": False, "wrist_x": None}
     _debug_logged = {"once": False}
 
     def _on_result(result, output_image, timestamp_ms):
         try:
-            lm = getattr(result, "hand_landmarks", None)
-            if lm:
-                hand = lm[0]
+            if result.gestures:
+                top = result.gestures[0][0]   # best gesture for the first hand
+                latest["gesture"] = top.category_name
+                latest["score"] = top.score
                 latest["hand_seen"] = True
-                latest["angle"] = _hand_angle_deg(hand)
-                latest["openness"] = _hand_openness(hand)
+                # hand_landmarks holds one list of 21 landmarks per detected
+                # hand; landmark 0 is the wrist. Guard defensively -- this
+                # field name has moved between MediaPipe releases, and a
+                # silent AttributeError here would kill wrist tracking (and
+                # therefore swipe direction) while gesture detection kept
+                # working fine, which is hard to tell apart from "swipe
+                # detection is broken" without this fallback + log.
+                lm = getattr(result, "hand_landmarks", None)
+                latest["wrist_x"] = lm[0][0].x if lm else None
                 if not _debug_logged["once"]:
                     _debug_logged["once"] = True
-                    print(f"[Gesture] debug: angle={latest['angle']:.1f} "
-                          f"openness={latest['openness']:.2f}")
+                    print(f"[Gesture] debug: gesture={top.category_name} "
+                          f"score={top.score:.2f} wrist_x={latest['wrist_x']} "
+                          f"hand_landmarks_present={lm is not None}")
             else:
+                latest["gesture"] = None
                 latest["hand_seen"] = False
-                latest["angle"] = None
-                latest["openness"] = None
+                latest["wrist_x"] = None
         except Exception as e:
             # Never let a callback error silently stop future callbacks.
             print(f"[Gesture] result callback error: {e}")
+            latest["gesture"] = None
             latest["hand_seen"] = False
-            latest["angle"] = None
-            latest["openness"] = None
+            latest["wrist_x"] = None
 
     options = mp_vision.GestureRecognizerOptions(
         base_options=mp_python.BaseOptions(model_asset_path=str(_MODEL_PATH)),
         running_mode=mp_vision.RunningMode.LIVE_STREAM,
         num_hands=1,
-        min_hand_detection_confidence=_MIN_HAND_CONF,
-        min_tracking_confidence=_MIN_TRACK_CONF,
-        min_hand_presence_confidence=_MIN_PRESENCE_CONF,
+        # Lowered from 0.6/0.5 -- a hand a few meters from the camera only
+        # covers a small patch of pixels, and the stricter defaults missed it
+        # entirely at distance. min_tracking_confidence in particular governs
+        # whether MediaPipe keeps following a hand between frames once found;
+        # a fast-moving (motion-blurred) hand drops below a high threshold
+        # and loses tracking, which is the other half of "fast swipes aren't
+        # detected" (the gesture classifier also needs a clean detection each
+        # time tracking is lost and has to re-run palm detection from scratch,
+        # which is slower and more likely to miss a quick motion).
+        min_hand_detection_confidence=0.4,
+        min_tracking_confidence=0.3,
+        min_hand_presence_confidence=0.4,
         result_callback=_on_result,
     )
 
@@ -245,10 +212,14 @@ def _run_loop(player) -> None:
         _STATE["running"] = False
         return
 
-    # Open the camera at its own default mode -- that's the configuration
-    # the manufacturer validated as reliable. Forcing a specific resolution/
-    # FPS previously backfired by exceeding what some webcams can sustain
-    # over USB, degrading the actual image instead of failing outright.
+    # Forcing 1280x720 @ 60fps (a previous change) backfired: many webcams
+    # can't sustain that combination over USB and the driver responds by
+    # degrading the actual image (blur/dark/dropped frames) rather than
+    # failing outright, which made detection worse across the board, not
+    # better. Let the camera open at its own default mode -- that's the
+    # configuration the manufacturer validated as reliable -- and only ask
+    # for 720p at whatever FPS the camera naturally provides at that
+    # resolution, without forcing a specific frame rate.
     cap = cv2.VideoCapture(_STATE["cap_index"])
     if not cap.isOpened():
         _log(player, "Couldn't open the camera for gesture control.")
@@ -258,9 +229,17 @@ def _run_loop(player) -> None:
 
     default_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     default_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    default_fps = cap.get(cv2.CAP_PROP_FPS)
+
+    # Only step up to 720p if the camera's own default is meaningfully
+    # smaller (e.g. 640x480) -- if it already defaults to 720p or higher,
+    # leave it alone rather than re-requesting the same or a different mode.
     if default_w < 1280:
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        # Verify the camera actually delivers a real frame at the new
+        # resolution before keeping it -- some drivers report success on
+        # cap.set() but then hand back garbage/black frames.
         ok, test_frame = cap.read()
         if not ok or test_frame is None or test_frame.mean() < 5:
             _log(player, "720p request produced a bad frame -- reverting to "
@@ -280,24 +259,33 @@ def _run_loop(player) -> None:
     window_name = "Parker - Gesture Control (press Q or say 'turn off gesture control' to stop)"
     show_preview = _STATE.get("show_preview", True)
 
-    # CLAHE (contrast-limited adaptive histogram equalization) boosts local
-    # contrast in dim/backlit frames -- only applied when the frame is
-    # actually dim, so it costs nothing when lighting is already fine.
-    _clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
-
+    last_trigger = 0.0
     flash_until = 0.0
     flash_label = ""
     start_time = time.monotonic()
+    # CLAHE (contrast-limited adaptive histogram equalization) boosts local
+    # contrast in dim/backlit frames, which is a common reason the palm
+    # detector misses a hand that's visually a bit dark or low-contrast
+    # against the background -- unlike forcing camera FPS/resolution (which
+    # backfired by exceeding what the camera driver could sustain), this only
+    # transforms the frame already captured and adapts per-frame, so it can't
+    # make a good frame worse the way the earlier camera changes did.
+    _clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
 
-    # Rolling (timestamp, angle) samples for twist detection.
-    angle_history: list[tuple[float, float]] = []
-    last_twist = 0.0
-
-    # Volume state: smoothed openness (to avoid jittery volume changes from
-    # per-frame landmark noise) and the last percent we actually applied.
-    smoothed_openness: float | None = None
-    last_volume_pct: int | None = None
-    last_volume_update = 0.0
+    # Rolling (timestamp, wrist_x) samples of ANY tracked hand position, used
+    # to detect swipe direction/distance once we've also seen Open_Palm
+    # recently. Tracking position independently of the per-frame gesture
+    # label (rather than clearing history the instant a single frame isn't
+    # classified as Open_Palm) matters because a fast swipe motion-blurs the
+    # hand, and the classifier can drop out or flicker to a different label
+    # for a frame or two mid-swipe -- clearing on every miss meant the
+    # history almost never accumulated enough samples to cross the distance
+    # threshold, and the swipe silently never fired.
+    wrist_history: list[tuple[float, float]] = []
+    last_open_palm_seen = 0.0
+    # How long a fist has been continuously held, to avoid firing on a fist
+    # that flashes past mid-gesture.
+    fist_since: float | None = None
 
     try:
         while _STATE["running"]:
@@ -308,6 +296,9 @@ def _run_loop(player) -> None:
 
             frame = cv2.flip(frame, 1)  # mirror, so it feels natural
 
+            # Only apply CLAHE when the frame is actually dim -- on a
+            # well-lit frame it does nothing useful and just costs CPU time
+            # every single frame for no benefit.
             gray_mean = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).mean()
             if gray_mean < 100:
                 lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
@@ -324,23 +315,31 @@ def _run_loop(player) -> None:
             recognizer.recognize_async(mp_image, ts_ms)
 
             now = time.monotonic()
-            hand_seen = latest["hand_seen"]
-            angle = latest["angle"]
-            openness = latest["openness"]
+            gesture = latest["gesture"]
+            score = latest["score"]
+            wrist_x = latest["wrist_x"]
+            confident = score >= _MIN_CONFIDENCE
+            cooling_down = (now - last_trigger) <= _COOLDOWN_S
 
-            # --- Wrist twist: track hand-relative angle over a short window,
-            # fire on a fast large swing in either direction. ---
-            if hand_seen and angle is not None:
-                angle_history.append((now, angle))
-            angle_history[:] = [(t, a) for t, a in angle_history if now - t <= _TWIST_WINDOW_S]
+            # --- Open_Palm swipe: track wrist x continuously whenever a hand
+            # is visible (regardless of the per-frame gesture label -- see
+            # the comment on wrist_history above), and require Open_Palm to
+            # have been seen recently as confirmation this is a deliberate
+            # palm swipe rather than incidental hand movement. ---
+            if confident and gesture == "Open_Palm":
+                last_open_palm_seen = now
+            if wrist_x is not None:
+                wrist_history.append((now, wrist_x))
+            wrist_history[:] = [(t, x) for t, x in wrist_history if now - t <= _SWIPE_WINDOW_S]
+            palm_recent = (now - last_open_palm_seen) <= _SWIPE_WINDOW_S
 
-            if (now - last_twist) > _TWIST_COOLDOWN_S and len(angle_history) >= 2:
-                angles = [a for _, a in angle_history]
-                d_angle = angles[-1] - angles[0]
-                if abs(d_angle) >= _TWIST_MIN_DELTA_DEG:
-                    last_twist = now
-                    angle_history.clear()
-                    if d_angle > 0:
+            if not cooling_down and palm_recent and len(wrist_history) >= 2:
+                xs = [x for _, x in wrist_history]
+                dx = xs[-1] - xs[0]   # signed: positive = moved right
+                if abs(dx) >= _SWIPE_MIN_DX:
+                    last_trigger = now
+                    wrist_history.clear()
+                    if dx > 0:
                         flash_label = "NEXT"
                         action_fn, action_name = next_track, "next track"
                     else:
@@ -349,39 +348,31 @@ def _run_loop(player) -> None:
                     flash_until = now + 0.4
                     try:
                         action_fn()
-                        _log(player, f"Wrist twist detected -- {action_name}.")
+                        _log(player, f"Swipe {flash_label.lower()} detected -- {action_name}.")
                     except Exception as e:
-                        _log(player, f"Twist detected but {action_name} failed: {e}")
+                        _log(player, f"Swipe detected but {action_name} failed: {e}")
 
-            # --- Openness -> volume: smooth the raw value, then map to 0-100
-            # and only push volume_set() when it actually changes and not too
-            # often (avoids hammering the OS volume API every frame). ---
-            if hand_seen and openness is not None:
-                if smoothed_openness is None:
-                    smoothed_openness = openness
-                else:
-                    smoothed_openness += _VOLUME_SMOOTHING * (openness - smoothed_openness)
-
-                frac = (smoothed_openness - _OPENNESS_MIN) / (_OPENNESS_MAX - _OPENNESS_MIN)
-                frac = max(0.0, min(1.0, frac))
-                pct = round(frac * 100)
-
-                if (pct != last_volume_pct
-                        and (now - last_volume_update) >= _VOLUME_UPDATE_MIN_INTERVAL_S):
-                    last_volume_pct = pct
-                    last_volume_update = now
+            # --- Closed_Fist: play/pause after a brief deliberate hold. ---
+            if confident and gesture == "Closed_Fist":
+                if fist_since is None:
+                    fist_since = now
+                elif not cooling_down and (now - fist_since) >= _FIST_HOLD_S:
+                    last_trigger = now
+                    fist_since = None
+                    flash_label = "PLAY/PAUSE"
+                    flash_until = now + 0.4
                     try:
-                        volume_set(pct)
+                        media_playpause()
+                        _log(player, "Fist detected -- toggled play/pause.")
                     except Exception as e:
-                        _log(player, f"Volume control failed: {e}")
+                        _log(player, f"Fist detected but playback control failed: {e}")
             else:
-                smoothed_openness = None
+                fist_since = None
 
             if show_preview:
                 h, w = frame.shape[:2]
-                if hand_seen:
-                    vol_text = f"vol {last_volume_pct}%" if last_volume_pct is not None else "vol ..."
-                    label = f"angle {angle:.0f} deg | {vol_text}"
+                if latest["hand_seen"]:
+                    label = f"{gesture or '...'} ({score:.2f})"
                     cv2.putText(frame, label, (10, 30),
                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
                 else:
