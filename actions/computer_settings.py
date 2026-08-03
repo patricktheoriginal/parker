@@ -240,6 +240,73 @@ def snap_right():
         except Exception:
             pass
 
+def point_window(parameters: dict = None) -> str:
+    """Docks the window last pointed at with the Pointing_Up hand gesture
+    (see gesture_control.py) to the left half, right half, or center of the
+    screen -- or just reports which window is currently pointed at.
+    parameters: {"action": "left"|"right"|"center"|"which"}. Windows only
+    (Pointing_Up targeting relies on Win32's WindowFromPoint); on other
+    platforms there's no gesture-pointing feature to act on."""
+    p = parameters or {}
+    action = (p.get("action") or "").strip().lower()
+
+    if _OS != "Windows":
+        return "Sir, pointing at windows to dock them is only available on Windows."
+
+    from actions.gesture_control import get_pointed_window
+    hwnd, title = get_pointed_window()
+    if not hwnd:
+        return ("Sir, I don't have a recent window you pointed at -- hold your "
+                "index finger up, point at the window, then tell me to snap it.")
+
+    if action == "which":
+        return f"You're pointing at: {title}, sir."
+
+    if action not in ("left", "right", "center"):
+        return "Sir, say 'snap it left', 'snap it right', or 'center it'."
+
+    import ctypes
+    user32 = ctypes.windll.user32
+    # Bring the pointed-at window to the foreground first -- SetWindowPos
+    # (and the Win+Left/Win+Right snap shortcuts, which act on whichever
+    # window currently has focus) both need it focused to act on the right
+    # window rather than whatever the user was last typing into.
+    user32.SetForegroundWindow(hwnd)
+    time.sleep(0.15)  # give the OS a beat to actually switch focus before acting
+
+    try:
+        if action == "left":
+            snap_left()
+        elif action == "right":
+            snap_right()
+        else:  # center -- Windows has no native "center snap" shortcut, so
+               # size/position it directly against the work area (screen
+               # minus taskbar) at roughly 60% width, centered.
+            SPI_GETWORKAREA = 0x0030
+
+            class RECT(ctypes.Structure):
+                _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
+                            ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+
+            work = RECT()
+            user32.SystemParametersInfoW(SPI_GETWORKAREA, 0, ctypes.byref(work), 0)
+            work_w = work.right - work.left
+            work_h = work.bottom - work.top
+            w, h = int(work_w * 0.6), int(work_h * 0.8)
+            x = work.left + (work_w - w) // 2
+            y = work.top + (work_h - h) // 2
+            SW_RESTORE = 9
+            user32.ShowWindow(hwnd, SW_RESTORE)  # un-maximize first, or
+                                                   # SetWindowPos below is a no-op
+            SWP_NOZORDER = 0x0004
+            user32.SetWindowPos(hwnd, 0, x, y, w, h, SWP_NOZORDER)
+    except Exception as e:
+        return f"Sir, I pointed at {title} but couldn't move it: {e}"
+
+    verb = {"left": "the left", "right": "the right", "center": "the center"}[action]
+    return f"Snapped {title} to {verb}, sir."
+
+
 def switch_window():
     if _OS == "Darwin": pyautogui.hotkey("command", "tab")
     else:               pyautogui.hotkey("alt", "tab")

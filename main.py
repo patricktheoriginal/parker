@@ -54,7 +54,7 @@ from actions.remote_mac         import (
 from actions.send_message      import send_message
 from actions.make_call         import make_call
 from actions.reminder          import reminder
-from actions.computer_settings import computer_settings
+from actions.computer_settings import computer_settings, point_window
 from actions.screen_processor  import _capture_camera, _capture_screen
 from actions.gesture_control   import gesture_control
 from actions.youtube_video     import youtube_video
@@ -445,6 +445,22 @@ TOOL_DECLARATIONS = [
         ),
         "parameters": {"type": "OBJECT", "properties": {
             "action": {"type": "STRING", "description": "'on' to start watching for hand gestures, 'off' to stop."}
+        }, "required": ["action"]},
+    },
+    {
+        "name": "point_window",
+        "description": (
+            "Docks whichever window the user last pointed at with their index "
+            "finger (Pointing_Up gesture, requires gesture control to be on) "
+            "to the left half, right half, or center of the screen. Also "
+            "reports which window is currently pointed at. Use when the user "
+            "says things like 'snap that window left', 'move this to the "
+            "right', 'center it', 'what am I pointing at' -- only after "
+            "they've been pointing at a window with gesture control on. "
+            "Windows only. action: 'left', 'right', 'center', or 'which'."
+        ),
+        "parameters": {"type": "OBJECT", "properties": {
+            "action": {"type": "STRING", "description": "'left', 'right', 'center', or 'which'."}
         }, "required": ["action"]},
     },
     {
@@ -1431,6 +1447,9 @@ class ParkerLive:
 
             elif name == "gesture_control":
                 result = await loop.run_in_executor(None, lambda: gesture_control(parameters=args, player=self.ui))
+
+            elif name == "point_window":
+                result = await loop.run_in_executor(None, lambda: point_window(parameters=args))
 
             elif name == "trending_news":
                 # Hard timeout — RSS fetch + AI summarize touch the network

@@ -16,6 +16,11 @@ Gestures:
   - Thumb_Down, held                                                  -> volume falls
     steadily while held, stopping automatically at 0% (holding past
     zero just keeps it at 0)
+  - Pointing_Up (index finger extended, held) -> tracks which on-screen
+    window the fingertip is "pointing at" (see _window_under_point below).
+    Doesn't trigger anything by itself -- it just sets the target that a
+    subsequent voice command (point_window, in computer_settings.py) acts
+    on, e.g. "snap that window left" after pointing at it.
 
 The swipe direction comes from tracking the wrist landmark's x position
 over a short rolling window while an Open_Palm is held -- the gesture
@@ -53,6 +58,19 @@ _STATE = {
     "cap_index": 0,
     "show_preview": True,
 }
+
+# The window currently "pointed at" (Pointing_Up held), read by
+# computer_settings.point_window() when the user issues a dock command by
+# voice. Written only by the gesture loop thread, read from the main
+# asyncio thread -- a single dict assignment is atomic enough in CPython
+# that no lock is needed for this simple last-writer-wins case.
+_POINTED = {"hwnd": None, "title": None, "at": 0.0}
+_POINT_HOLD_S = 0.35     # how long Pointing_Up must be held before it counts
+                          # as a deliberate point rather than a hand passing
+                          # through that shape on the way to another gesture
+_POINT_STALE_S = 10.0     # a point older than this no longer counts as "the"
+                          # target -- avoids acting on a window pointed at
+                          # long ago and forgotten about
 
 _MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/"
              "gesture_recognizer/gesture_recognizer/float16/latest/"
@@ -112,6 +130,17 @@ def _get_current_volume() -> int:
         return 50
 
 
+def get_pointed_window():
+    """Returns (hwnd, title) of the window last pointed at (Pointing_Up held
+    for _POINT_HOLD_S), or (None, None) if nothing was pointed at recently
+    (older than _POINT_STALE_S) or gesture control isn't running. Used by
+    computer_settings.point_window() to resolve "that window" to an actual
+    HWND for a voice-issued dock command."""
+    if time.monotonic() - _POINTED["at"] > _POINT_STALE_S:
+        return None, None
+    return _POINTED["hwnd"], _POINTED["title"]
+
+
 def gesture_control(parameters: dict = None, player=None, session_memory=None) -> str:
     """Turn hand-gesture control on or off. parameters: {"action": "on"|"off"}"""
     p = parameters or {}
@@ -123,7 +152,8 @@ def gesture_control(parameters: dict = None, player=None, session_memory=None) -
     return ("Sir, say 'turn on gesture control' or 'turn off gesture control'. "
             "Once on: make a fist to play/pause, swipe an open hand right for "
             "next track, left for previous track, thumbs up to raise the "
-            "volume, thumbs down to lower it.")
+            "volume, thumbs down to lower it, or point with your index finger "
+            "at a window and then tell me to snap it left, right, or center.")
 
 
 def _ensure_model(player=None) -> bool:
@@ -164,7 +194,9 @@ def _start(player=None) -> str:
     t.start()
     return ("Gesture control is on, sir. Make a fist to play or pause, swipe "
             "an open hand right for the next track, left for the previous one, "
-            "thumbs up for louder, thumbs down for quieter.")
+            "thumbs up for louder, thumbs down for quieter, or point your "
+            "index finger at a window and tell me to snap it left, right, "
+            "or center.")
 
 
 def _stop(player=None) -> str:
@@ -186,6 +218,65 @@ def _log(player, msg: str):
             pass
 
 
+def _window_under_point(norm_x: float, norm_y: float):
+    """Maps a normalized (0-1, 0-1) fingertip position -- treating the whole
+    camera frame as a trackpad over the whole virtual screen, no camera/head
+    calibration needed -- to a real screen coordinate, then returns the
+    (hwnd, title) of the top-level window under that point via Win32's
+    WindowFromPoint. Returns (None, None) off Windows or if nothing usable
+    is under the point (e.g. the desktop itself). Walks up to the top-level
+    ancestor because WindowFromPoint can return a child control (e.g. a
+    button) rather than the window we actually want to act on."""
+    import platform
+    if platform.system() != "Windows":
+        return None, None
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        # ctypes defaults every windll function to a c_int return type, which
+        # truncates 64-bit window handles on 64-bit Windows -- WindowFromPoint
+        # and GetAncestor both return HWNDs and need the wider type declared
+        # explicitly, or a handle above the 32-bit range comes back mangled
+        # and every lookup after it (title, SetForegroundWindow, ...) fails
+        # silently against the wrong (or a garbage) window.
+        user32.WindowFromPoint.restype = ctypes.c_void_p
+        user32.GetAncestor.restype = ctypes.c_void_p
+        screen_w = user32.GetSystemMetrics(0)
+        screen_h = user32.GetSystemMetrics(1)
+        # Mirror horizontally to match the flipped preview frame (flip(1) is
+        # applied before landmarks are read), so pointing right on-screen
+        # from the user's point of view maps to the right side of the
+        # display, not the left.
+        px = int((1.0 - norm_x) * screen_w)
+        py = int(norm_y * screen_h)
+        px = max(0, min(screen_w - 1, px))
+        py = max(0, min(screen_h - 1, py))
+
+        class POINT(ctypes.Structure):
+            _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+        pt = POINT(px, py)
+        hwnd = user32.WindowFromPoint(pt)
+        if not hwnd:
+            return None, None
+        # Walk up to the top-level (desktop-owned) ancestor -- GA_ROOT = 2.
+        root = user32.GetAncestor(hwnd, 2)
+        if root:
+            hwnd = root
+        length = user32.GetWindowTextLengthW(hwnd)
+        if length <= 0:
+            return None, None
+        buf = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(hwnd, buf, length + 1)
+        title = buf.value.strip()
+        if not title:
+            return None, None
+        return hwnd, title
+    except Exception as e:
+        print(f"[Gesture] window-under-point lookup failed: {e}")
+        return None, None
+
+
 def _run_loop(player) -> None:
     import cv2
     import mediapipe as mp
@@ -197,7 +288,8 @@ def _run_loop(player) -> None:
     # Shared mutable state the LIVE_STREAM callback writes into -- the
     # callback runs on MediaPipe's own thread, not this loop, so results are
     # picked up on the next frame we render rather than awaited directly.
-    latest = {"gesture": None, "score": 0.0, "hand_seen": False, "wrist_x": None}
+    latest = {"gesture": None, "score": 0.0, "hand_seen": False, "wrist_x": None,
+              "index_tip": None}
     _debug_logged = {"once": False}
     # Set right before each recognize_async() call, cleared by the callback
     # when that result comes back. If it's still True when the next frame is
@@ -223,6 +315,9 @@ def _run_loop(player) -> None:
                 # detection is broken" without this fallback + log.
                 lm = getattr(result, "hand_landmarks", None)
                 latest["wrist_x"] = lm[0][0].x if lm else None
+                # Landmark 8 is the index fingertip -- used for Pointing_Up
+                # targeting. Same defensive guard as wrist_x above.
+                latest["index_tip"] = (lm[0][8].x, lm[0][8].y) if lm else None
                 if not _debug_logged["once"]:
                     _debug_logged["once"] = True
                     print(f"[Gesture] debug: gesture={top.category_name} "
@@ -232,12 +327,14 @@ def _run_loop(player) -> None:
                 latest["gesture"] = None
                 latest["hand_seen"] = False
                 latest["wrist_x"] = None
+                latest["index_tip"] = None
         except Exception as e:
             # Never let a callback error silently stop future callbacks.
             print(f"[Gesture] result callback error: {e}")
             latest["gesture"] = None
             latest["hand_seen"] = False
             latest["wrist_x"] = None
+            latest["index_tip"] = None
 
     options = mp_vision.GestureRecognizerOptions(
         base_options=mp_python.BaseOptions(model_asset_path=str(_MODEL_PATH)),
@@ -351,6 +448,8 @@ def _run_loop(player) -> None:
     # How long a fist has been continuously held, to avoid firing on a fist
     # that flashes past mid-gesture.
     fist_since: float | None = None
+    # Same idea for Pointing_Up -- how long it's been continuously held.
+    point_since: float | None = None
 
     # Volume ramp state: current ramped value (float, for smooth per-frame
     # stepping) and when it was last pushed to the OS, plus which direction
@@ -457,6 +556,28 @@ def _run_loop(player) -> None:
                         _log(player, f"Fist detected but playback control failed: {e}")
             else:
                 fist_since = None
+
+            # --- Pointing_Up: map the index fingertip's position in the
+            # camera frame directly onto screen coordinates (frame acts like
+            # a trackpad over the whole screen -- no camera/head calibration
+            # needed, just a straight normalized-coordinate mapping) and look
+            # up which top-level window is under that point. Held briefly
+            # (like the fist) so a hand passing through this shape mid-
+            # gesture doesn't register as a deliberate point. ---
+            if confident and gesture == "Pointing_Up" and latest["index_tip"] is not None:
+                if point_since is None:
+                    point_since = now
+                elif (now - point_since) >= _POINT_HOLD_S:
+                    tip_x, tip_y = latest["index_tip"]
+                    hwnd, title = _window_under_point(tip_x, tip_y)
+                    if hwnd:
+                        _POINTED["hwnd"] = hwnd
+                        _POINTED["title"] = title
+                        _POINTED["at"] = now
+                        flash_label = f"POINTING: {title[:30]}"
+                        flash_until = now + 0.3
+            else:
+                point_since = None
 
             # --- Thumb_Up/Thumb_Down: ramp volume up/down at a fixed rate
             # while held, clamping cleanly at 100/0 instead of continuing to
