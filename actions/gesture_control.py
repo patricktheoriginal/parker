@@ -16,11 +16,16 @@ Gestures:
   - Thumb_Down, held                                                  -> volume falls
     steadily while held, stopping automatically at 0% (holding past
     zero just keeps it at 0)
-  - Pointing_Up (index finger extended, held) -> tracks which on-screen
-    window the fingertip is "pointing at" (see _window_under_point below).
-    Doesn't trigger anything by itself -- it just sets the target that a
-    subsequent voice command (point_window, in computer_settings.py) acts
-    on, e.g. "snap that window left" after pointing at it.
+  - Pointing_Up (index finger extended), held briefly on a window -> picks
+    that window up; moving your hand while still holding Pointing_Up drags
+    it around the screen in real time; dropping the gesture releases it in
+    place. While a drag is active, every other gesture is suppressed (a
+    dragging hand naturally passes through shapes that look like a fist or
+    open palm, and those firing mid-drag would be a bad time to also
+    trigger play/pause or a track skip). The picked-up window also becomes
+    the target for a follow-up voice command (point_window, in
+    computer_settings.py), e.g. "snap that window left" after a quick
+    point without dragging.
 
 The swipe direction comes from tracking the wrist landmark's x position
 over a short rolling window while an Open_Palm is held -- the gesture
@@ -152,8 +157,9 @@ def gesture_control(parameters: dict = None, player=None, session_memory=None) -
     return ("Sir, say 'turn on gesture control' or 'turn off gesture control'. "
             "Once on: make a fist to play/pause, swipe an open hand right for "
             "next track, left for previous track, thumbs up to raise the "
-            "volume, thumbs down to lower it, or point with your index finger "
-            "at a window and then tell me to snap it left, right, or center.")
+            "volume, thumbs down to lower it, or hold your index finger up "
+            "on a window to pick it up and drag it around, or point at it "
+            "briefly and tell me to snap it left, right, or center.")
 
 
 def _ensure_model(player=None) -> bool:
@@ -194,9 +200,9 @@ def _start(player=None) -> str:
     t.start()
     return ("Gesture control is on, sir. Make a fist to play or pause, swipe "
             "an open hand right for the next track, left for the previous one, "
-            "thumbs up for louder, thumbs down for quieter, or point your "
-            "index finger at a window and tell me to snap it left, right, "
-            "or center.")
+            "thumbs up for louder, thumbs down for quieter, or hold your "
+            "index finger up on a window to pick it up and drag it, or point "
+            "and tell me to snap it left, right, or center.")
 
 
 def _stop(player=None) -> str:
@@ -275,6 +281,41 @@ def _window_under_point(norm_x: float, norm_y: float):
     except Exception as e:
         print(f"[Gesture] window-under-point lookup failed: {e}")
         return None, None
+
+
+def _move_window_by(hwnd, dx_px: int, dy_px: int) -> bool:
+    """Moves a window by a pixel offset, keeping its current size -- used
+    every frame while a Pointing_Up drag is in progress. Reads the window's
+    current position fresh each call (rather than tracking it locally)
+    since GetWindowRect is cheap and this avoids ever drifting out of sync
+    with where the window actually is (e.g. if the user also nudged it some
+    other way mid-drag). Returns False (and lets the caller drop the drag)
+    if the window's gone -- e.g. it was closed while being dragged."""
+    import ctypes
+
+    class RECT(ctypes.Structure):
+        _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
+                    ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+
+    try:
+        user32 = ctypes.windll.user32
+        user32.IsWindow.restype = ctypes.c_int
+        if not user32.IsWindow(hwnd):
+            return False
+        rect = RECT()
+        if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+            return False
+        w = rect.right - rect.left
+        h = rect.bottom - rect.top
+        SWP_NOSIZE = 0x0001
+        SWP_NOZORDER = 0x0004
+        SWP_NOACTIVATE = 0x0010
+        user32.SetWindowPos(hwnd, 0, rect.left + dx_px, rect.top + dy_px, w, h,
+                            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE)
+        return True
+    except Exception as e:
+        print(f"[Gesture] drag move failed: {e}")
+        return False
 
 
 def _run_loop(player) -> None:
@@ -450,6 +491,15 @@ def _run_loop(player) -> None:
     fist_since: float | None = None
     # Same idea for Pointing_Up -- how long it's been continuously held.
     point_since: float | None = None
+    # Drag state: once Pointing_Up has been held past _POINT_HOLD_S on a
+    # window, that window is "picked up" and follows the fingertip until
+    # Pointing_Up is released (hand drops the gesture or leaves frame).
+    # drag_last_tip is the previous frame's fingertip position, in *pixels*
+    # (not normalized 0-1) -- normalized deltas would need re-scaling by
+    # screen size every frame anyway, so pixels are computed once per frame
+    # and reused directly as the SetWindowPos offset.
+    drag_hwnd = None
+    drag_last_tip_px: tuple[float, float] | None = None
 
     # Volume ramp state: current ramped value (float, for smooth per-frame
     # stepping) and when it was last pushed to the OS, plus which direction
@@ -463,6 +513,20 @@ def _run_loop(player) -> None:
     frame_count = 0
     needs_clahe = False   # re-checked every _LIGHT_CHECK_INTERVAL frames only
     target_frame_time = 1.0 / 30.0   # pace the loop to ~30fps of actual work
+
+    # Screen size for mapping the fingertip's normalized position to real
+    # pixel coordinates (used by both the point-and-hold target lookup and
+    # the drag-move delta calculation). Windows only, matching
+    # _window_under_point -- off Windows there's nothing to drag.
+    screen_w, screen_h = 0, 0
+    if _platform.system() == "Windows":
+        try:
+            import ctypes
+            _user32 = ctypes.windll.user32
+            screen_w = _user32.GetSystemMetrics(0)
+            screen_h = _user32.GetSystemMetrics(1)
+        except Exception:
+            pass
 
     try:
         while _STATE["running"]:
@@ -508,6 +572,70 @@ def _run_loop(player) -> None:
             wrist_x = latest["wrist_x"]
             confident = score >= _MIN_CONFIDENCE
             cooling_down = (now - last_trigger) <= _COOLDOWN_S
+
+            # --- Pointing_Up: hold on a window to "pick it up", then move
+            # your hand to drag it around; releasing the gesture (or losing
+            # the hand) drops it in place. Handled before the other gestures
+            # and, while a drag is active, suppresses them entirely -- a
+            # dragging hand naturally passes through shapes that look like a
+            # fist or open palm, and letting those fire mid-drag would
+            # trigger play/pause or a track skip in the middle of moving a
+            # window. ---
+            dragging = drag_hwnd is not None
+            if confident and gesture == "Pointing_Up" and latest["index_tip"] is not None:
+                tip_x, tip_y = latest["index_tip"]
+                tip_px = ((1.0 - tip_x) * screen_w, tip_y * screen_h)  # mirror
+                                                                          # to match preview flip, same as _window_under_point
+                if point_since is None:
+                    point_since = now
+                elif not dragging and (now - point_since) >= _POINT_HOLD_S:
+                    # Hold duration crossed -- pick up whatever's under the
+                    # fingertip right now and start dragging it.
+                    hwnd, title = _window_under_point(tip_x, tip_y)
+                    if hwnd:
+                        drag_hwnd = hwnd
+                        drag_last_tip_px = tip_px
+                        _POINTED["hwnd"] = hwnd
+                        _POINTED["title"] = title
+                        _POINTED["at"] = now
+                        flash_label = f"DRAGGING: {title[:30]}"
+                        flash_until = now + 0.3
+                        dragging = True
+                elif dragging:
+                    dx = tip_px[0] - drag_last_tip_px[0]
+                    dy = tip_px[1] - drag_last_tip_px[1]
+                    drag_last_tip_px = tip_px
+                    if (dx or dy) and not _move_window_by(drag_hwnd, int(dx), int(dy)):
+                        # Window's gone (e.g. closed mid-drag) -- drop it.
+                        drag_hwnd = None
+                        drag_last_tip_px = None
+                        dragging = False
+                    else:
+                        flash_label = "DRAGGING"
+                        flash_until = now + 0.2
+            else:
+                point_since = None
+                if dragging:
+                    _log(player, "Window drag released.")
+                drag_hwnd = None
+                drag_last_tip_px = None
+                dragging = False
+
+            if dragging:
+                # Skip every other gesture this frame -- see comment above.
+                elapsed = time.monotonic() - loop_start
+                remaining = target_frame_time - elapsed
+                if remaining > 0:
+                    time.sleep(remaining)
+                if show_preview:
+                    h, w = frame.shape[:2]
+                    cv2.putText(frame, flash_label, (10, 30),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+                    cv2.rectangle(frame, (0, 0), (w - 1, h - 1), (0, 255, 255), 6)
+                    cv2.imshow(window_name, frame)
+                    if cv2.waitKey(1) & 0xFF == ord("q"):
+                        break
+                continue
 
             # --- Open_Palm swipe: track wrist x continuously whenever a hand
             # is visible (regardless of the per-frame gesture label -- see
@@ -556,28 +684,6 @@ def _run_loop(player) -> None:
                         _log(player, f"Fist detected but playback control failed: {e}")
             else:
                 fist_since = None
-
-            # --- Pointing_Up: map the index fingertip's position in the
-            # camera frame directly onto screen coordinates (frame acts like
-            # a trackpad over the whole screen -- no camera/head calibration
-            # needed, just a straight normalized-coordinate mapping) and look
-            # up which top-level window is under that point. Held briefly
-            # (like the fist) so a hand passing through this shape mid-
-            # gesture doesn't register as a deliberate point. ---
-            if confident and gesture == "Pointing_Up" and latest["index_tip"] is not None:
-                if point_since is None:
-                    point_since = now
-                elif (now - point_since) >= _POINT_HOLD_S:
-                    tip_x, tip_y = latest["index_tip"]
-                    hwnd, title = _window_under_point(tip_x, tip_y)
-                    if hwnd:
-                        _POINTED["hwnd"] = hwnd
-                        _POINTED["title"] = title
-                        _POINTED["at"] = now
-                        flash_label = f"POINTING: {title[:30]}"
-                        flash_until = now + 0.3
-            else:
-                point_since = None
 
             # --- Thumb_Up/Thumb_Down: ramp volume up/down at a fixed rate
             # while held, clamping cleanly at 100/0 instead of continuing to
