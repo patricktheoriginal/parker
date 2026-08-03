@@ -430,16 +430,16 @@ TOOL_DECLARATIONS = [
     {
         "name": "gesture_control",
         "description": (
-            "Turns hand-swipe camera gesture control on or off. When on, "
-            "swiping a hand across the webcam toggles play/pause on whatever "
-            "music player is active — no voice command needed for that. OFF "
-            "by default (uses the camera continuously while on). Use when "
-            "the user says 'turn on gesture control', 'enable hand gestures "
-            "for music', 'turn off gesture control', 'stop watching for "
-            "gestures'. action: 'on' or 'off'."
+            "Turns hand-gesture camera control on or off. When on, holding up "
+            "an open palm to the webcam toggles play/pause on whatever music "
+            "player is active — no voice command needed for that. Shows a "
+            "small camera preview window while active. OFF by default (uses "
+            "the camera continuously while on). Use when the user says 'turn "
+            "on gesture control', 'enable hand gestures for music', 'turn off "
+            "gesture control', 'stop watching for gestures'. action: 'on' or 'off'."
         ),
         "parameters": {"type": "OBJECT", "properties": {
-            "action": {"type": "STRING", "description": "'on' to start watching for swipe gestures, 'off' to stop."}
+            "action": {"type": "STRING", "description": "'on' to start watching for hand gestures, 'off' to stop."}
         }, "required": ["action"]},
     },
     {

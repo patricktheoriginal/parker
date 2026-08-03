@@ -1,35 +1,53 @@
 """
-gesture_control.py — camera hand-swipe gesture to play/pause music.
+gesture_control.py — camera hand-gesture control to play/pause music.
 
-Runs a background thread that watches the webcam via MediaPipe Hands and
-toggles play/pause when it sees a fast horizontal swipe (a hand crossing most
-of the frame width within a short time window). OFF by default — the user
-turns it on/off by voice ("turn on gesture control" / "turn off gesture
-control") rather than it running continuously, to avoid needless CPU/battery
-use and the camera light staying on all the time.
+Uses MediaPipe's current Tasks API (GestureRecognizer), not the deprecated
+`mp.solutions.hands` legacy API — Tasks is Google's actively maintained
+gesture pipeline with a purpose-built classifier instead of hand-rolled
+landmark math, and is what MediaPipe recommends going forward. It ships 7
+built-in gestures (Closed_Fist, Open_Palm, Pointing_Up, Thumb_Down,
+Thumb_Up, Victory, ILoveYou); an open palm toggles play/pause here.
+
+Runs a background thread that watches the webcam and shows a small preview
+window (so it's visible the camera is on and actually seeing your hand).
+OFF by default — the user turns it on/off by voice ("turn on gesture
+control" / "turn off gesture control") rather than it running continuously,
+to avoid needless CPU/battery use and the camera light staying on all the
+time.
 
 Requires: pip install mediapipe opencv-python (opencv-python is already a
-Parker dependency). Fails soft with a clear message if mediapipe isn't
-installed.
+Parker dependency). MediaPipe officially supports Python 3.9-3.12 — see
+tools/setup_venv312.ps1 if your system Python is newer. The gesture model
+(~ a few MB) downloads once to ~/.parker/mediapipe/ and is cached after
+that. Fails soft with a clear message if anything isn't available.
 """
 
 import threading
 import time
+import urllib.request
+from pathlib import Path
 
 _STATE = {
     "thread": None,
     "running": False,
     "cap_index": 0,
+    "show_preview": True,
 }
 
-# Swipe detection tuning.
-_SWIPE_MIN_DX = 0.45      # hand must cross at least 45% of frame width
-_SWIPE_MAX_S = 0.6        # ...within this many seconds to count as a swipe
-_COOLDOWN_S = 1.5         # ignore further swipes for this long after one fires
+_MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/"
+             "gesture_recognizer/gesture_recognizer/float16/latest/"
+             "gesture_recognizer.task")
+_MODEL_PATH = Path.home() / ".parker" / "mediapipe" / "gesture_recognizer.task"
+
+# Gestures that toggle play/pause. Open_Palm (an open hand held up) is the
+# most deliberate/least accidental of the built-in set.
+_TRIGGER_GESTURES = {"Open_Palm"}
+_MIN_CONFIDENCE = 0.6
+_COOLDOWN_S = 1.5   # ignore further triggers for this long after one fires
 
 
 def gesture_control(parameters: dict = None, player=None, session_memory=None) -> str:
-    """Turn hand-swipe gesture control on or off. parameters: {"action": "on"|"off"}"""
+    """Turn hand-gesture control on or off. parameters: {"action": "on"|"off"}"""
     p = parameters or {}
     action = (p.get("action") or "").strip().lower()
     if action in ("on", "start", "enable", "activate", "true", "1"):
@@ -37,7 +55,21 @@ def gesture_control(parameters: dict = None, player=None, session_memory=None) -
     if action in ("off", "stop", "disable", "deactivate", "false", "0"):
         return _stop(player)
     return ("Sir, say 'turn on gesture control' or 'turn off gesture control' — "
-            "swiping your hand across the camera will then play/pause music.")
+            "holding up an open palm to the camera will then play/pause music.")
+
+
+def _ensure_model(player=None) -> bool:
+    if _MODEL_PATH.exists():
+        return True
+    try:
+        _log(player, "Downloading the gesture recognition model (one-time, "
+                     "a few MB)...")
+        _MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+        urllib.request.urlretrieve(_MODEL_URL, str(_MODEL_PATH))
+        return True
+    except Exception as e:
+        _log(player, f"Couldn't download the gesture model: {e}")
+        return False
 
 
 def _start(player=None) -> str:
@@ -51,13 +83,18 @@ def _start(player=None) -> str:
     try:
         import mediapipe  # noqa: F401
     except Exception:
-        return "Sir, MediaPipe isn't installed — run: pip install mediapipe"
+        return ("Sir, MediaPipe isn't installed or isn't compatible with this "
+                "Python version (MediaPipe supports Python 3.9-3.12). Run "
+                "tools/setup_venv312.ps1, or: pip install mediapipe")
+
+    if not _ensure_model(player):
+        return "Sir, I couldn't get the gesture recognition model — check your connection."
 
     _STATE["running"] = True
     t = threading.Thread(target=_run_loop, args=(player,), daemon=True)
     _STATE["thread"] = t
     t.start()
-    return ("Gesture control is on, sir. Swipe your hand across the camera "
+    return ("Gesture control is on, sir. Hold up an open palm to the camera "
             "to play or pause music.")
 
 
@@ -83,38 +120,60 @@ def _log(player, msg: str):
 def _run_loop(player) -> None:
     import cv2
     import mediapipe as mp
+    from mediapipe.tasks import python as mp_python
+    from mediapipe.tasks.python import vision as mp_vision
 
     from actions.computer_settings import media_playpause
 
-    hands = mp.solutions.hands.Hands(
-        model_complexity=0,        # lightest model — this only needs to
-                                    # track one point smoothly, not draw a skeleton
-        max_num_hands=1,
-        min_detection_confidence=0.6,
+    # Shared mutable state the LIVE_STREAM callback writes into — the
+    # callback runs on MediaPipe's own thread, not this loop, so results are
+    # picked up on the next frame we render rather than awaited directly.
+    latest = {"gesture": None, "score": 0.0, "hand_seen": False}
+
+    def _on_result(result, output_image, timestamp_ms):
+        if result.gestures:
+            top = result.gestures[0][0]   # best gesture for the first hand
+            latest["gesture"] = top.category_name
+            latest["score"] = top.score
+            latest["hand_seen"] = True
+        else:
+            latest["gesture"] = None
+            latest["hand_seen"] = False
+
+    options = mp_vision.GestureRecognizerOptions(
+        base_options=mp_python.BaseOptions(model_asset_path=str(_MODEL_PATH)),
+        running_mode=mp_vision.RunningMode.LIVE_STREAM,
+        num_hands=1,
+        min_hand_detection_confidence=0.6,
         min_tracking_confidence=0.5,
+        result_callback=_on_result,
     )
+
+    try:
+        recognizer = mp_vision.GestureRecognizer.create_from_options(options)
+    except Exception as e:
+        _log(player, f"Couldn't start the gesture recognizer: {e}")
+        _STATE["running"] = False
+        return
 
     cap = cv2.VideoCapture(_STATE["cap_index"])
     if not cap.isOpened():
         _log(player, "Couldn't open the camera for gesture control.")
+        recognizer.close()
         _STATE["running"] = False
         return
 
     _log(player, "Gesture control camera started.")
 
-    # Show a small preview window with the tracked hand drawn on it, so it's
-    # visibly obvious the camera is on and actually seeing your hand — pure
-    # background tracking with no feedback made it impossible to tell whether
-    # it was working. Window title doubles as a reminder it's watching.
+    # Small preview window with live status text, so it's visibly obvious the
+    # camera is on and actually seeing your hand — pure background tracking
+    # with no feedback made it impossible to tell whether it was working.
     window_name = "Parker — Gesture Control (press Q or say 'turn off gesture control' to stop)"
     show_preview = _STATE.get("show_preview", True)
 
-    # Track the wrist's x position over a short rolling window to detect a
-    # fast, large horizontal movement (a swipe) without false-triggering on
-    # normal small hand jitter.
-    history: list[tuple[float, float]] = []   # (timestamp, x_normalized)
     last_trigger = 0.0
-    flash_until = 0.0   # briefly flash the preview border green on a swipe
+    flash_until = 0.0
+    start_time = time.monotonic()
 
     try:
         while _STATE["running"]:
@@ -123,38 +182,30 @@ def _run_loop(player) -> None:
                 time.sleep(0.05)
                 continue
 
-            frame = cv2.flip(frame, 1)  # mirror, so swipe direction feels natural
+            frame = cv2.flip(frame, 1)  # mirror, so it feels natural
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            result = hands.process(rgb)
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+            ts_ms = int((time.monotonic() - start_time) * 1000)
+            recognizer.recognize_async(mp_image, ts_ms)
 
             now = time.monotonic()
-            hand_seen = bool(result.multi_hand_landmarks)
-            if hand_seen:
-                # Wrist landmark (index 0) is a stable single point to track.
-                wrist = result.multi_hand_landmarks[0].landmark[0]
-                history.append((now, wrist.x))
-            # Drop samples older than the swipe detection window.
-            history[:] = [(t, x) for t, x in history if now - t <= _SWIPE_MAX_S]
-
-            if len(history) >= 2 and (now - last_trigger) > _COOLDOWN_S:
-                xs = [x for _, x in history]
-                dx = max(xs) - min(xs)
-                if dx >= _SWIPE_MIN_DX:
-                    last_trigger = now
-                    flash_until = now + 0.4
-                    history.clear()
-                    try:
-                        media_playpause()
-                        _log(player, "Swipe detected — toggled play/pause.")
-                    except Exception as e:
-                        _log(player, f"Swipe detected but playback control failed: {e}")
+            gesture = latest["gesture"]
+            score = latest["score"]
+            if (gesture in _TRIGGER_GESTURES and score >= _MIN_CONFIDENCE
+                    and (now - last_trigger) > _COOLDOWN_S):
+                last_trigger = now
+                flash_until = now + 0.4
+                try:
+                    media_playpause()
+                    _log(player, f"{gesture} detected ({score:.2f}) — toggled play/pause.")
+                except Exception as e:
+                    _log(player, f"Gesture detected but playback control failed: {e}")
 
             if show_preview:
                 h, w = frame.shape[:2]
-                if hand_seen:
-                    cx, cy = int(wrist.x * w), int(wrist.y * h)
-                    cv2.circle(frame, (cx, cy), 14, (0, 255, 0), 3)
-                    cv2.putText(frame, "hand detected", (10, 30),
+                if latest["hand_seen"]:
+                    label = f"{gesture or '...'} ({score:.2f})"
+                    cv2.putText(frame, label, (10, 30),
                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
                 else:
                     cv2.putText(frame, "no hand in view", (10, 30),
@@ -177,6 +228,6 @@ def _run_loop(player) -> None:
                 cv2.destroyWindow(window_name)
             except Exception:
                 pass
-        hands.close()
+        recognizer.close()
         _STATE["running"] = False
         _log(player, "Gesture control camera stopped.")
