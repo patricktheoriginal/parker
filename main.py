@@ -1723,11 +1723,26 @@ class ParkerLive:
         loop = asyncio.get_event_loop()
         import numpy as _np
 
+        try:
+            _dev = sd.query_devices(kind="input")
+            print(f"[PARKER] 🎤 Input device: {_dev.get('name')} "
+                  f"({_dev.get('default_samplerate')} Hz native)")
+        except Exception:
+            pass
+
         # Adaptive gain: quietly boost weak mics so Gemini hears clearly, with a
-        # hard clip-guard so we never distort. Gain adapts slowly toward a target
-        # peak; if a boosted block would clip, we back off instead of overdriving.
-        _target_peak = 0.5 * 32767.0   # aim for ~-6 dBFS peaks
-        _max_gain = 6.0                # never amplify more than 6× (weak mics)
+        # hard clip-guard so we never distort.
+        #
+        # Gain is driven by smoothed RMS (average loudness), not instantaneous
+        # peak — peak reacts to single loud consonants/plosives within a ~64ms
+        # block, which made the gain visibly "pump" up and down mid-sentence.
+        # That pumping distorts the natural loudness contour between syllables,
+        # which is exactly what speech-to-text models rely on — a likely cause
+        # of misheard words. A slower RMS-based gain stays steady through a
+        # whole utterance instead of chasing every transient.
+        _target_rms = 0.18 * 32767.0   # aim for a comfortable average level
+        _max_gain = 4.0                 # lower than before — less noise amplification
+        _noise_gate_rms = 120.0         # below this RMS, treat the block as silence/noise
         _gain_state = {"g": 1.0}
 
         def callback(indata, frames, time_info, status):
@@ -1740,18 +1755,24 @@ class ParkerLive:
                     and not self._reconnecting and not self._pending_reconnect):
                 try:
                     samples = indata.reshape(-1).astype(_np.float32)
-                    peak = float(_np.max(_np.abs(samples))) if samples.size else 0.0
-                    if peak > 500.0:  # only adapt on real speech, ignore silence/hum
-                        desired = _target_peak / peak
+                    rms = float(_np.sqrt(_np.mean(samples ** 2))) if samples.size else 0.0
+
+                    # Noise gate: only adapt gain on blocks with real signal —
+                    # amplifying room hum/hiss up to speech level feeds the
+                    # model garbage between words and hurts transcription of
+                    # the real speech around it.
+                    if rms > _noise_gate_rms:
+                        desired = _target_rms / max(rms, 1.0)
                         desired = max(1.0, min(_max_gain, desired))
-                        # Smooth toward the desired gain so volume doesn't pump.
-                        _gain_state["g"] += 0.1 * (desired - _gain_state["g"])
+                        # Smooth toward the desired gain so it doesn't pump.
+                        _gain_state["g"] += 0.05 * (desired - _gain_state["g"])
+
                     g = _gain_state["g"]
                     if g > 1.01:
                         boosted = samples * g
-                        # Clip-guard: if the peak would exceed full scale, scale
+                        # Clip-guard: if the boosted block would clip, scale
                         # this block down just enough to stay clean.
-                        bpeak = float(_np.max(_np.abs(boosted)))
+                        bpeak = float(_np.max(_np.abs(boosted))) if boosted.size else 0.0
                         if bpeak > 32767.0:
                             boosted *= 32767.0 / bpeak
                         data = boosted.astype(_np.int16).tobytes()
