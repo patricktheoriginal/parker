@@ -102,11 +102,19 @@ def _run_loop(player) -> None:
 
     _log(player, "Gesture control camera started.")
 
+    # Show a small preview window with the tracked hand drawn on it, so it's
+    # visibly obvious the camera is on and actually seeing your hand — pure
+    # background tracking with no feedback made it impossible to tell whether
+    # it was working. Window title doubles as a reminder it's watching.
+    window_name = "Parker — Gesture Control (press Q or say 'turn off gesture control' to stop)"
+    show_preview = _STATE.get("show_preview", True)
+
     # Track the wrist's x position over a short rolling window to detect a
     # fast, large horizontal movement (a swipe) without false-triggering on
     # normal small hand jitter.
     history: list[tuple[float, float]] = []   # (timestamp, x_normalized)
     last_trigger = 0.0
+    flash_until = 0.0   # briefly flash the preview border green on a swipe
 
     try:
         while _STATE["running"]:
@@ -120,7 +128,8 @@ def _run_loop(player) -> None:
             result = hands.process(rgb)
 
             now = time.monotonic()
-            if result.multi_hand_landmarks:
+            hand_seen = bool(result.multi_hand_landmarks)
+            if hand_seen:
                 # Wrist landmark (index 0) is a stable single point to track.
                 wrist = result.multi_hand_landmarks[0].landmark[0]
                 history.append((now, wrist.x))
@@ -132,6 +141,7 @@ def _run_loop(player) -> None:
                 dx = max(xs) - min(xs)
                 if dx >= _SWIPE_MIN_DX:
                     last_trigger = now
+                    flash_until = now + 0.4
                     history.clear()
                     try:
                         media_playpause()
@@ -139,11 +149,34 @@ def _run_loop(player) -> None:
                     except Exception as e:
                         _log(player, f"Swipe detected but playback control failed: {e}")
 
+            if show_preview:
+                h, w = frame.shape[:2]
+                if hand_seen:
+                    cx, cy = int(wrist.x * w), int(wrist.y * h)
+                    cv2.circle(frame, (cx, cy), 14, (0, 255, 0), 3)
+                    cv2.putText(frame, "hand detected", (10, 30),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                else:
+                    cv2.putText(frame, "no hand in view", (10, 30),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                border = (0, 255, 0) if now < flash_until else (60, 60, 60)
+                cv2.rectangle(frame, (0, 0), (w - 1, h - 1), border, 6)
+                cv2.imshow(window_name, frame)
+                # waitKey also pumps the window's event loop — required for
+                # imshow to actually render/update each frame.
+                if cv2.waitKey(1) & 0xFF == ord("q"):
+                    break
+
             time.sleep(0.02)   # ~50 fps cap, plenty for gesture tracking
     except Exception as e:
         _log(player, f"Gesture control stopped due to an error: {e}")
     finally:
         cap.release()
+        if show_preview:
+            try:
+                cv2.destroyWindow(window_name)
+            except Exception:
+                pass
         hands.close()
         _STATE["running"] = False
         _log(player, "Gesture control camera stopped.")
