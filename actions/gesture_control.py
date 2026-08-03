@@ -83,6 +83,11 @@ _FIST_HOLD_S = 0.25
 _VOLUME_RAMP_PCT_PER_S = 40.0
 _VOLUME_UPDATE_INTERVAL_S = 0.1   # don't call volume_set() every single frame
 
+# Re-check whether the frame needs CLAHE brightness boosting only every N
+# frames -- room lighting doesn't change fast enough to need a fresh
+# full-frame brightness measurement every single frame.
+_LIGHT_CHECK_INTERVAL = 15
+
 
 def _get_current_volume() -> int:
     """Read the current system volume (0-100) via pycaw. Returns 50 (a
@@ -194,8 +199,15 @@ def _run_loop(player) -> None:
     # picked up on the next frame we render rather than awaited directly.
     latest = {"gesture": None, "score": 0.0, "hand_seen": False, "wrist_x": None}
     _debug_logged = {"once": False}
+    # Set right before each recognize_async() call, cleared by the callback
+    # when that result comes back. If it's still True when the next frame is
+    # ready, MediaPipe hasn't finished the previous frame yet -- skipping the
+    # call in that case (instead of queuing more work on top) is what stops
+    # the lag from building up over time rather than staying constant.
+    _inference_pending = {"flag": False}
 
     def _on_result(result, output_image, timestamp_ms):
+        _inference_pending["flag"] = False
         try:
             if result.gestures:
                 top = result.gestures[0][0]   # best gesture for the first hand
@@ -337,20 +349,28 @@ def _run_loop(player) -> None:
     last_volume_push = 0.0
     last_volume_pushed_int: int | None = None
 
+    frame_count = 0
+    needs_clahe = False   # re-checked every _LIGHT_CHECK_INTERVAL frames only
+    target_frame_time = 1.0 / 30.0   # pace the loop to ~30fps of actual work
+
     try:
         while _STATE["running"]:
+            loop_start = time.monotonic()
             ok, frame = cap.read()
             if not ok:
                 time.sleep(0.05)
                 continue
 
             frame = cv2.flip(frame, 1)  # mirror, so it feels natural
+            frame_count += 1
 
-            # Only apply CLAHE when the frame is actually dim -- on a
-            # well-lit frame it does nothing useful and just costs CPU time
-            # every single frame for no benefit.
-            gray_mean = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).mean()
-            if gray_mean < 100:
+            # Room lighting doesn't change frame-to-frame -- re-measuring
+            # brightness on every single frame (a full-frame cvtColor) was
+            # pure wasted CPU. Check periodically instead.
+            if frame_count % _LIGHT_CHECK_INTERVAL == 1:
+                needs_clahe = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).mean() < 100
+
+            if needs_clahe:
                 lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
                 l, a, b = cv2.split(lab)
                 l = _clahe.apply(l)
@@ -359,10 +379,17 @@ def _run_loop(player) -> None:
             else:
                 detect_frame = frame
 
-            rgb = cv2.cvtColor(detect_frame, cv2.COLOR_BGR2RGB)
-            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-            ts_ms = int((time.monotonic() - start_time) * 1000)
-            recognizer.recognize_async(mp_image, ts_ms)
+            # Skip starting new inference while the previous frame's result
+            # hasn't come back yet, instead of queuing work MediaPipe can't
+            # keep up with -- that queuing is what made the camera get
+            # progressively laggier over time rather than staying at a
+            # steady (if imperfect) frame rate.
+            if not _inference_pending["flag"]:
+                rgb = cv2.cvtColor(detect_frame, cv2.COLOR_BGR2RGB)
+                mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+                ts_ms = int((time.monotonic() - start_time) * 1000)
+                _inference_pending["flag"] = True
+                recognizer.recognize_async(mp_image, ts_ms)
 
             now = time.monotonic()
             gesture = latest["gesture"]
@@ -479,7 +506,17 @@ def _run_loop(player) -> None:
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     break
 
-            time.sleep(0.02)   # ~50 fps cap, plenty for gesture tracking
+            # Pace to ~30fps of actual wall-clock time rather than always
+            # sleeping a fixed 20ms on top of however long this iteration's
+            # processing took -- if a frame took longer than the target
+            # (e.g. CLAHE kicked in, or cvtColor was briefly slow), sleeping
+            # a further fixed amount regardless just compounds the delay
+            # frame after frame, which is what made the camera feel like it
+            # was getting progressively laggier rather than staying steady.
+            elapsed = time.monotonic() - loop_start
+            remaining = target_frame_time - elapsed
+            if remaining > 0:
+                time.sleep(remaining)
     except Exception as e:
         _log(player, f"Gesture control stopped due to an error: {e}")
     finally:
