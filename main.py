@@ -1277,14 +1277,18 @@ class ParkerLive:
 
         # Voice-activity detection tuned to catch soft/short speech and not cut
         # the user off. START_SENSITIVITY_HIGH triggers on quieter onsets;
-        # a longer end-of-speech padding avoids clipping trailing words.
+        # END_SENSITIVITY_LOW already makes end-of-speech detection lenient
+        # (won't fire on a brief pause), so silence_duration_ms doesn't need
+        # to ALSO be long — 800ms stacked on top of that added ~0.8s of dead
+        # air to every single turn. 400ms keeps the same "don't cut mid-word"
+        # safety from END_SENSITIVITY_LOW while responding much faster.
         try:
             _vad = types.RealtimeInputConfig(
                 automatic_activity_detection=types.AutomaticActivityDetection(
                     start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_HIGH,
                     end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_LOW,
                     prefix_padding_ms=200,
-                    silence_duration_ms=800,
+                    silence_duration_ms=400,
                 )
             )
         except Exception:
