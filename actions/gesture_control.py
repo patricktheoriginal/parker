@@ -522,11 +522,22 @@ def _run_loop(player) -> None:
     _log(player, f"Gesture control camera started ({actual_w}x{actual_h} "
                  f"@ {actual_fps:.0f}fps).")
 
-    # Small preview window with live status text, so it's visibly obvious the
+    # Preview window with live status text, so it's visibly obvious the
     # camera is on and actually seeing your hand -- pure background tracking
     # with no feedback made it impossible to tell whether it was working.
+    # Displayed larger than the captured frame (OpenCV scales it up to fit
+    # the window) -- this only affects the on-screen preview size, not the
+    # camera's actual capture resolution, so it carries none of the risk
+    # that forcing capture resolution/FPS did (see the CAP_DSHOW/720p
+    # comments above): the frames fed to MediaPipe are untouched.
     window_name = "Parker - Gesture Control (press Q or say 'turn off gesture control' to stop)"
     show_preview = _STATE.get("show_preview", True)
+    if show_preview:
+        _PREVIEW_SCALE = 1.6
+        preview_w = max(actual_w, int(actual_w * _PREVIEW_SCALE))
+        preview_h = max(actual_h, int(actual_h * _PREVIEW_SCALE))
+        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(window_name, preview_w, preview_h)
 
     last_trigger = 0.0
     flash_until = 0.0
