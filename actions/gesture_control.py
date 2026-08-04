@@ -41,6 +41,15 @@ each ramp start, then step it every frame) rather than mapping hand shape
 to an absolute level -- this matches the reference behavior of clamping
 cleanly at 0/100 instead of continuing to compute an out-of-range target.
 
+Window-drag tracking is smoothed with a velocity-adaptive EMA plus jump
+rejection and lost-frame tolerance (see _DRAG_ALPHA_MIN etc. below),
+adapted from the raw-landmark-smoothing technique in
+github.com/sophiamyang/finger-frame-effect-ai -- feeding MediaPipe's raw
+per-frame landmark straight into SetWindowPos made dragging feel laggy
+and jittery, since a closed fist has fewer stable visual features than an
+open palm and its tracked position wobbles a bit even when the hand is
+still.
+
 Runs a background thread that watches the webcam and shows a small preview
 window (so it's visible the camera is on and actually seeing your hand).
 OFF by default -- the user turns it on/off by voice ("turn on gesture
@@ -85,6 +94,31 @@ _DRAG_ARM_WINDOW_S = 3.0   # a Closed_Fist made within this long of a fresh
                           # play/pause fist -- keeps the two gestures fully
                           # unambiguous (same hand shape, different meaning
                           # only based on what just happened before it)
+
+# Drag-position smoothing (velocity-adaptive EMA, technique adapted from
+# https://github.com/sophiamyang/finger-frame-effect-ai): a fixed smoothing
+# factor is a lose-lose for a raw MediaPipe landmark feed -- low alpha kills
+# jitter but adds a visible lag when the hand moves fast (which reads as
+# "the drag is laggy"); high alpha tracks fast motion well but jitters
+# visibly when the hand is nearly still (which reads as "the window is
+# shaking"). Scaling alpha by how far the point moved since last frame gets
+# both: small movements are smoothed hard, large/fast movements are
+# tracked almost immediately.
+_DRAG_ALPHA_MIN = 0.35
+_DRAG_ALPHA_MAX = 0.85
+_DRAG_ALPHA_MOVE_SPAN_PX = 60.0   # movement (px) at which alpha saturates to MAX
+# A single-frame jump larger than this fraction of the smoothed movement
+# scale must repeat for _DRAG_JUMP_CONFIRM_FRAMES straight frames before
+# it's trusted -- rejects one-off landmark spikes (common on a closed fist,
+# which has fewer stable visual features than an open palm) without adding
+# real lag, since a genuine fast move keeps recurring and gets confirmed
+# within a frame or two.
+_DRAG_JUMP_PX = 120.0
+_DRAG_JUMP_CONFIRM_FRAMES = 2
+# How many consecutive frames of a lost/unconfident hand a drag tolerates
+# before releasing -- MediaPipe briefly dropping tracking for a frame or
+# two (common mid-motion) shouldn't feel like the window got dropped.
+_DRAG_MAX_LOST_FRAMES = 8
 
 _MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/"
              "gesture_recognizer/gesture_recognizer/float16/latest/"
@@ -392,18 +426,25 @@ def _run_loop(player) -> None:
         base_options=mp_python.BaseOptions(model_asset_path=str(_MODEL_PATH)),
         running_mode=mp_vision.RunningMode.LIVE_STREAM,
         num_hands=1,
-        # Lowered from 0.6/0.5 -- a hand a few meters from the camera only
-        # covers a small patch of pixels, and the stricter defaults missed it
-        # entirely at distance. min_tracking_confidence in particular governs
-        # whether MediaPipe keeps following a hand between frames once found;
-        # a fast-moving (motion-blurred) hand drops below a high threshold
-        # and loses tracking, which is the other half of "fast swipes aren't
-        # detected" (the gesture classifier also needs a clean detection each
-        # time tracking is lost and has to re-run palm detection from scratch,
-        # which is slower and more likely to miss a quick motion).
-        min_hand_detection_confidence=0.4,
+        # Lowered further to 0.3 across the board (from 0.4/0.3/0.4) --
+        # matches the permissive thresholds used by
+        # github.com/sophiamyang/finger-frame-effect-ai, which favors
+        # continuity/responsiveness over precision for the same reason we
+        # need it here: a hand a few meters from the camera only covers a
+        # small patch of pixels, and stricter defaults miss it entirely at
+        # distance. min_tracking_confidence in particular governs whether
+        # MediaPipe keeps following a hand between frames once found; a
+        # fast-moving (motion-blurred) hand, or a closed fist mid-drag
+        # (fewer stable visual features than an open palm), drops below a
+        # high threshold and loses tracking -- which both misses fast
+        # swipes and is what made drag tracking flicker in and out. The
+        # jump-rejection + lost-frame tolerance added around the drag loop
+        # (see _DRAG_JUMP_PX etc. above) are what make it safe to lower
+        # this without letting occasional noisier detections cause a bad
+        # frame to move the window.
+        min_hand_detection_confidence=0.3,
         min_tracking_confidence=0.3,
-        min_hand_presence_confidence=0.4,
+        min_hand_presence_confidence=0.3,
         result_callback=_on_result,
     )
 
@@ -509,12 +550,18 @@ def _run_loop(player) -> None:
     # Drag state: once a Closed_Fist has been recognized as a grab (per
     # selected_at/_DRAG_ARM_WINDOW_S above), the selected window is "picked
     # up" and follows the hand until the fist opens. drag_last_tip is the
-    # previous frame's hand position, in *pixels* (not normalized 0-1) --
-    # normalized deltas would need re-scaling by screen size every frame
-    # anyway, so pixels are computed once per frame and reused directly as
-    # the SetWindowPos offset.
+    # previous frame's *smoothed* hand position, in *pixels* (not normalized
+    # 0-1) -- normalized deltas would need re-scaling by screen size every
+    # frame anyway, so pixels are computed once per frame and reused
+    # directly as the SetWindowPos offset.
     drag_hwnd = None
     drag_last_tip_px: tuple[float, float] | None = None
+    # Pending (not-yet-confirmed) large jump: (candidate_px, frames_seen).
+    # See _DRAG_JUMP_PX / _DRAG_JUMP_CONFIRM_FRAMES above.
+    drag_pending_jump: tuple[tuple[float, float], int] | None = None
+    # Consecutive frames the drag has gone without a confident, in-gesture
+    # hand reading -- see _DRAG_MAX_LOST_FRAMES above.
+    drag_lost_frames = 0
 
     # Volume ramp state: current ramped value (float, for smooth per-frame
     # stepping) and when it was last pushed to the OS, plus which direction
@@ -593,16 +640,70 @@ def _run_loop(player) -> None:
             # every frame until it opens. Handled first and, while active,
             # suppresses every other gesture this frame -- a moving fist
             # naturally passes through shapes that look like other gestures,
-            # and those firing mid-drag would be a bad surprise. ---
+            # and those firing mid-drag would be a bad surprise.
+            #
+            # Raw per-frame landmark deltas fed straight into SetWindowPos
+            # is what made dragging feel laggy/jittery: MediaPipe's landmark
+            # position on a closed fist (fewer stable visual features than
+            # an open palm) wobbles a bit frame to frame even when the hand
+            # is still, and any wobble goes straight into the window
+            # position with nothing smoothing it out. Fixed with three
+            # pieces (technique adapted from
+            # github.com/sophiamyang/finger-frame-effect-ai, which solves
+            # the same raw-landmark-jitter problem for its own tracked
+            # points):
+            #   1. Velocity-adaptive EMA -- alpha scales with how far the
+            #      point moved, so small (jittery) moves are smoothed hard
+            #      and large (real) moves are tracked almost immediately.
+            #   2. Jump rejection -- a single-frame jump bigger than
+            #      _DRAG_JUMP_PX must repeat for _DRAG_JUMP_CONFIRM_FRAMES
+            #      before it's trusted, so a one-off bad landmark can't
+            #      teleport the window.
+            #   3. Lost-frame tolerance -- a briefly lost/unconfident hand
+            #      (common mid-motion) doesn't instantly drop the drag. ---
             dragging = drag_hwnd is not None
             if dragging:
-                if confident and gesture == "Closed_Fist" and latest["index_tip"] is not None:
+                have_hand = confident and gesture == "Closed_Fist" and latest["index_tip"] is not None
+                if have_hand:
+                    drag_lost_frames = 0
                     tip_x, tip_y = latest["index_tip"]
-                    tip_px = ((1.0 - tip_x) * screen_w, tip_y * screen_h)  # mirror,
+                    raw_px = ((1.0 - tip_x) * screen_w, tip_y * screen_h)  # mirror,
                                                                               # matches the preview flip
-                    dx = tip_px[0] - drag_last_tip_px[0]
-                    dy = tip_px[1] - drag_last_tip_px[1]
-                    drag_last_tip_px = tip_px
+
+                    jump_dist = ((raw_px[0] - drag_last_tip_px[0]) ** 2 +
+                                 (raw_px[1] - drag_last_tip_px[1]) ** 2) ** 0.5
+                    if jump_dist > _DRAG_JUMP_PX:
+                        # Big single-frame jump -- don't trust it yet. Only
+                        # act on it once the same jump shows up again on the
+                        # next frame(s), confirming it's real motion and not
+                        # a one-frame landmark spike.
+                        if drag_pending_jump is not None:
+                            prev_candidate, seen = drag_pending_jump
+                            still_close = (abs(raw_px[0] - prev_candidate[0]) < _DRAG_JUMP_PX / 2 and
+                                          abs(raw_px[1] - prev_candidate[1]) < _DRAG_JUMP_PX / 2)
+                        else:
+                            still_close, seen = False, 0
+                        if still_close and seen + 1 >= _DRAG_JUMP_CONFIRM_FRAMES:
+                            drag_pending_jump = None
+                            target_px = raw_px
+                        else:
+                            drag_pending_jump = (raw_px, seen + 1 if still_close else 1)
+                            target_px = drag_last_tip_px   # hold position this frame
+                    else:
+                        drag_pending_jump = None
+                        target_px = raw_px
+
+                    moved = ((target_px[0] - drag_last_tip_px[0]) ** 2 +
+                             (target_px[1] - drag_last_tip_px[1]) ** 2) ** 0.5
+                    alpha = min(_DRAG_ALPHA_MAX, max(_DRAG_ALPHA_MIN,
+                                moved / _DRAG_ALPHA_MOVE_SPAN_PX))
+                    smoothed_px = (
+                        drag_last_tip_px[0] + (target_px[0] - drag_last_tip_px[0]) * alpha,
+                        drag_last_tip_px[1] + (target_px[1] - drag_last_tip_px[1]) * alpha,
+                    )
+                    dx = smoothed_px[0] - drag_last_tip_px[0]
+                    dy = smoothed_px[1] - drag_last_tip_px[1]
+                    drag_last_tip_px = smoothed_px
                     if (dx or dy) and not _move_window_by(drag_hwnd, int(dx), int(dy)):
                         drag_hwnd = None   # window's gone (e.g. closed mid-drag)
                         drag_last_tip_px = None
@@ -611,10 +712,15 @@ def _run_loop(player) -> None:
                         flash_label = "DRAGGING"
                         flash_until = now + 0.2
                 else:
-                    _log(player, "Window drag released.")
-                    drag_hwnd = None
-                    drag_last_tip_px = None
-                    dragging = False
+                    drag_lost_frames += 1
+                    if drag_lost_frames > _DRAG_MAX_LOST_FRAMES:
+                        _log(player, "Window drag released.")
+                        drag_hwnd = None
+                        drag_last_tip_px = None
+                        dragging = False
+                    else:
+                        flash_label = "DRAGGING (hand lost)"
+                        flash_until = now + 0.2
 
             if dragging:
                 elapsed = time.monotonic() - loop_start
@@ -703,6 +809,8 @@ def _run_loop(player) -> None:
                         tip_x, tip_y = latest["index_tip"]
                         drag_hwnd = hwnd
                         drag_last_tip_px = ((1.0 - tip_x) * screen_w, tip_y * screen_h)
+                        drag_pending_jump = None
+                        drag_lost_frames = 0
                         flash_label = f"GRABBED: {title[:30]}"
                         flash_until = now + 0.3
                         _log(player, f"Fist grabbed selection -- dragging {title}.")
