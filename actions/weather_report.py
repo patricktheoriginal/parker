@@ -144,35 +144,67 @@ $ErrorActionPreference = 'Stop'
 $inv = [System.Globalization.CultureInfo]::InvariantCulture
 function Out-Pos($lat,$lon){ Write-Output ("OK|" + $lat.ToString($inv) + "|" + $lon.ToString($inv)) }
 
-# On Windows PowerShell 5 (.NET Framework) the WinRT interop extension type is
-# in System.Runtime.WindowsRuntime, which must be loaded explicitly.
-try { [System.Reflection.Assembly]::Load('System.Runtime.WindowsRuntime, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a') | Out-Null } catch {}
-
-# Correctly await a WinRT IAsyncOperation[T] from PowerShell.
-$asTask = [System.WindowsRuntimeSystemExtensions].GetMethods() |
-    Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and
-                   $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' } |
-    Select-Object -First 1
-function Await($op, $resultType, $waitMs = 20000) {
-    $m = $asTask.MakeGenericMethod($resultType)
-    $t = $m.Invoke($null, @($op))
-    $t.Wait($waitMs) | Out-Null
-    return $t.Result
-}
-
-# --- Method A: WinRT Geolocator ---
-# DesiredAccuracy (the High/Default enum) and DesiredAccuracyInMeters are two
-# separate knobs and both matter: DesiredAccuracy tells the OS which location
-# provider/mode to prefer (High steers it toward GPS instead of settling for a
-# quick Wi-Fi/network fix), DesiredAccuracyInMeters is the numeric target once
-# it's using that mode. Setting High matters most on hardware with a real GPS
-# chip (e.g. WWAN-equipped laptops) -- without it Windows may not bother
-# waiting for a GPS cold fix and returns a coarser, faster network position
-# instead, since Default doesn't ask it to prioritize accuracy over speed.
-# Timeout raised 20s -> 45s: a real GPS chip's cold fix (no recent fix cached)
-# commonly takes 20-40s to lock a precise position, and the old 20s ceiling
-# was cutting that off before the receiver had time to refine its fix.
+# --- Method A: legacy GeoCoordinateWatcher (System.Device.Location) ---
+# Tried first now, not as a fallback: it's a plain .NET Framework class with
+# no WinRT projection involved, and it uses the same underlying Windows
+# Location Provider (GPS/Wi-Fi/IP, whichever the OS picks) as the WinRT
+# Geolocator -- so there's no accuracy tradeoff to trying this first, only
+# less to go wrong. The WinRT path below it needs
+# System.Runtime.WindowsRuntime loaded from the GAC by exact strong name,
+# which is a brittle, undocumented reflection trick that can fail outright
+# on some Windows builds ("Could not load file or assembly...") even with a
+# fully installed, current .NET Framework -- when that happens the whole
+# method is a dead end, whereas GeoCoordinateWatcher just works.
+#
+# TryStart() only waits for the *permission prompt*, not for an actual
+# position fix -- reading .Position immediately after it returns is a common
+# mistake that looks like "no GPS" when the receiver just hasn't reported in
+# yet. Polling Status/Position in a loop is what actually waits for the fix,
+# up to the real GPS cold-fix window (20-40s is typical).
 try {
+    Add-Type -AssemblyName System.Device
+    $w = New-Object System.Device.Location.GeoCoordinateWatcher('High')
+    $null = $w.TryStart($true, [TimeSpan]::FromSeconds(10))
+    if ($w.Permission -eq [System.Device.Location.GeoPositionPermission]::Denied) {
+        Write-Output "DENIED"; exit
+    }
+    $deadline = (Get-Date).AddSeconds(45)
+    while ((Get-Date) -lt $deadline) {
+        if ($w.Status -eq [System.Device.Location.GeoPositionStatus]::Ready -and
+            -not $w.Position.Location.IsUnknown) {
+            $c = $w.Position.Location
+            Out-Pos $c.Latitude $c.Longitude; exit
+        }
+        if ($w.Permission -eq [System.Device.Location.GeoPositionPermission]::Denied) {
+            Write-Output "DENIED"; exit
+        }
+        Start-Sleep -Milliseconds 500
+    }
+    # Timed out without a fix -- fall through to Method B rather than giving
+    # up, in case the WinRT path (which can use a different provider under
+    # the hood) does better on this machine.
+} catch { }
+
+# --- Method B: WinRT Geolocator ---
+# On Windows PowerShell 5 (.NET Framework) the WinRT interop extension type is
+# in System.Runtime.WindowsRuntime, which must be loaded explicitly. This can
+# fail with a FileNotFoundException on some Windows builds even with .NET
+# Framework fully installed and current -- if so, this whole method is
+# skipped and Method A above is the real answer.
+try {
+    [System.Reflection.Assembly]::Load('System.Runtime.WindowsRuntime, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a') | Out-Null
+
+    $asTask = [System.WindowsRuntimeSystemExtensions].GetMethods() |
+        Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and
+                       $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' } |
+        Select-Object -First 1
+    function Await($op, $resultType, $waitMs = 20000) {
+        $m = $asTask.MakeGenericMethod($resultType)
+        $t = $m.Invoke($null, @($op))
+        $t.Wait($waitMs) | Out-Null
+        return $t.Result
+    }
+
     $null = [Windows.Devices.Geolocation.Geolocator,Windows.Devices.Geolocation,ContentType=WindowsRuntime]
     $accType = [Windows.Devices.Geolocation.GeolocationAccessStatus]
     $status  = Await ([Windows.Devices.Geolocation.Geolocator]::RequestAccessAsync()) $accType
@@ -188,19 +220,7 @@ try {
         $p = $pos.Coordinate.Point.Position
         Out-Pos $p.Latitude $p.Longitude; exit
     }
-} catch { }
-
-# --- Method B: legacy GeoCoordinateWatcher ---
-try {
-    Add-Type -AssemblyName System.Device
-    $w = New-Object System.Device.Location.GeoCoordinateWatcher('High')
-    $null = $w.TryStart($true, [TimeSpan]::FromSeconds(45))
-    if ($w.Permission -eq [System.Device.Location.GeoPositionPermission]::Denied) {
-        Write-Output "DENIED"; exit
-    }
-    $c = $w.Position.Location
-    if ($c.IsUnknown) { Write-Output "NOFIX"; exit }
-    Out-Pos $c.Latitude $c.Longitude; exit
+    Write-Output "NOFIX"; exit
 } catch {
     Write-Output ("ERROR|" + $_.Exception.Message); exit
 }
@@ -221,13 +241,14 @@ def _windows_gps() -> tuple[dict | None, str]:
         r = _subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive",
              "-ExecutionPolicy", "Bypass", "-Command", _WIN_GPS_PS],
-            # 60s: the WinRT wait alone can take up to 45s (see _WIN_GPS_PS),
-            # plus the legacy fallback's own 45s if method A throws before
-            # timing out -- and PowerShell/reflection startup overhead on
-            # top of both. Generous headroom so a real GPS cold fix isn't
-            # cut off by the Python-side timeout before the PS-side one
-            # even fires.
-            capture_output=True, text=True, timeout=60,
+            # 100s: Method A (GeoCoordinateWatcher) can wait up to 45s for a
+            # fix, and if it times out without one, Method B (WinRT) is
+            # tried too and can wait up to another 45s -- worst case both
+            # run their full timeout back to back. Generous headroom on top
+            # for PowerShell/reflection startup overhead, so a real GPS cold
+            # fix isn't cut off by the Python-side timeout before either
+            # PS-side attempt even finishes.
+            capture_output=True, text=True, timeout=100,
             creationflags=getattr(_subprocess, "CREATE_NO_WINDOW", 0),
         )
         out = (r.stdout or "").strip()
