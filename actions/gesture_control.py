@@ -118,7 +118,12 @@ _DRAG_JUMP_CONFIRM_FRAMES = 2
 # How many consecutive frames of a lost/unconfident hand a drag tolerates
 # before releasing -- MediaPipe briefly dropping tracking for a frame or
 # two (common mid-motion) shouldn't feel like the window got dropped.
-_DRAG_MAX_LOST_FRAMES = 8
+# Raised from 8 to 15 (roughly half a second at ~30fps) -- Closed_Fist is
+# the hardest shape for the classifier to stay confident on frame to frame
+# even mid-drag when nothing about the gesture actually changed, so losing
+# it briefly is common enough that 8 frames (~0.27s) was still dropping
+# drags the user was actively holding.
+_DRAG_MAX_LOST_FRAMES = 15
 
 _MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/"
              "gesture_recognizer/gesture_recognizer/float16/latest/"
@@ -129,6 +134,16 @@ _MIN_CONFIDENCE = 0.45     # lowered from 0.6 -- a hand at distance/in motion
                             # scores lower even when it's genuinely the right
                             # gesture; the classifier's own confidence is
                             # already fairly conservative
+# Closed_Fist gets its own, lower bar: a closed hand hides most of its
+# landmarks (fingers folded into the palm), which is the hardest shape for
+# the classifier to score confidently even when it's unambiguously a fist
+# to the eye -- the general _MIN_CONFIDENCE was tuned against easier, more
+# open gestures (Open_Palm, Thumb_Up/Down, Pointing_Up all keep at least
+# one finger fully extended and visible) and was too strict for fist in
+# particular, causing real fists to go unrecognized. Applied narrowly (only
+# to Closed_Fist) rather than lowering _MIN_CONFIDENCE globally, so the
+# other gestures don't get more false-positive-prone as a side effect.
+_FIST_MIN_CONFIDENCE = 0.32
 _COOLDOWN_S = 1.2          # ignore further triggers for this long after one fires
 
 # Swipe detection (Open_Palm + fast horizontal move).
@@ -633,6 +648,11 @@ def _run_loop(player) -> None:
             score = latest["score"]
             wrist_x = latest["wrist_x"]
             confident = score >= _MIN_CONFIDENCE
+            # Closed_Fist checks its own lower bar (see _FIST_MIN_CONFIDENCE
+            # above) instead of the general one -- computed once here since
+            # both the drag-tracking block and the fist-hold block below
+            # need it.
+            fist_confident = gesture == "Closed_Fist" and score >= _FIST_MIN_CONFIDENCE
             cooling_down = (now - last_trigger) <= _COOLDOWN_S
 
             # --- Drag in progress: a Closed_Fist grabbed the current
@@ -663,7 +683,7 @@ def _run_loop(player) -> None:
             #      (common mid-motion) doesn't instantly drop the drag. ---
             dragging = drag_hwnd is not None
             if dragging:
-                have_hand = confident and gesture == "Closed_Fist" and latest["index_tip"] is not None
+                have_hand = fist_confident and latest["index_tip"] is not None
                 if have_hand:
                     drag_lost_frames = 0
                     tip_x, tip_y = latest["index_tip"]
@@ -799,7 +819,7 @@ def _run_loop(player) -> None:
             # instead of the normal play/pause. That's the only thing that
             # tells the two apart -- same hand shape either way -- so a fist
             # made with no recent selection is unambiguously play/pause. ---
-            if confident and gesture == "Closed_Fist":
+            if fist_confident:
                 if fist_since is None:
                     fist_since = now
                 elif not cooling_down and (now - fist_since) >= _FIST_HOLD_S:
