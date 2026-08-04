@@ -153,14 +153,25 @@ $asTask = [System.WindowsRuntimeSystemExtensions].GetMethods() |
     Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and
                    $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' } |
     Select-Object -First 1
-function Await($op, $resultType) {
+function Await($op, $resultType, $waitMs = 20000) {
     $m = $asTask.MakeGenericMethod($resultType)
     $t = $m.Invoke($null, @($op))
-    $t.Wait(20000) | Out-Null
+    $t.Wait($waitMs) | Out-Null
     return $t.Result
 }
 
 # --- Method A: WinRT Geolocator ---
+# DesiredAccuracy (the High/Default enum) and DesiredAccuracyInMeters are two
+# separate knobs and both matter: DesiredAccuracy tells the OS which location
+# provider/mode to prefer (High steers it toward GPS instead of settling for a
+# quick Wi-Fi/network fix), DesiredAccuracyInMeters is the numeric target once
+# it's using that mode. Setting High matters most on hardware with a real GPS
+# chip (e.g. WWAN-equipped laptops) -- without it Windows may not bother
+# waiting for a GPS cold fix and returns a coarser, faster network position
+# instead, since Default doesn't ask it to prioritize accuracy over speed.
+# Timeout raised 20s -> 45s: a real GPS chip's cold fix (no recent fix cached)
+# commonly takes 20-40s to lock a precise position, and the old 20s ceiling
+# was cutting that off before the receiver had time to refine its fix.
 try {
     $null = [Windows.Devices.Geolocation.Geolocator,Windows.Devices.Geolocation,ContentType=WindowsRuntime]
     $accType = [Windows.Devices.Geolocation.GeolocationAccessStatus]
@@ -169,9 +180,10 @@ try {
         Write-Output "DENIED"; exit
     }
     $geo = New-Object Windows.Devices.Geolocation.Geolocator
-    $geo.DesiredAccuracyInMeters = 100
+    $geo.DesiredAccuracy = [Windows.Devices.Geolocation.PositionAccuracy]::High
+    $geo.DesiredAccuracyInMeters = 10
     $posType = [Windows.Devices.Geolocation.Geoposition]
-    $pos = Await ($geo.GetGeopositionAsync()) $posType
+    $pos = Await ($geo.GetGeopositionAsync()) $posType 45000
     if ($pos -ne $null) {
         $p = $pos.Coordinate.Point.Position
         Out-Pos $p.Latitude $p.Longitude; exit
@@ -182,7 +194,7 @@ try {
 try {
     Add-Type -AssemblyName System.Device
     $w = New-Object System.Device.Location.GeoCoordinateWatcher('High')
-    $null = $w.TryStart($true, [TimeSpan]::FromSeconds(12))
+    $null = $w.TryStart($true, [TimeSpan]::FromSeconds(45))
     if ($w.Permission -eq [System.Device.Location.GeoPositionPermission]::Denied) {
         Write-Output "DENIED"; exit
     }
@@ -209,7 +221,13 @@ def _windows_gps() -> tuple[dict | None, str]:
         r = _subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive",
              "-ExecutionPolicy", "Bypass", "-Command", _WIN_GPS_PS],
-            capture_output=True, text=True, timeout=35,
+            # 60s: the WinRT wait alone can take up to 45s (see _WIN_GPS_PS),
+            # plus the legacy fallback's own 45s if method A throws before
+            # timing out -- and PowerShell/reflection startup overhead on
+            # top of both. Generous headroom so a real GPS cold fix isn't
+            # cut off by the Python-side timeout before the PS-side one
+            # even fires.
+            capture_output=True, text=True, timeout=60,
             creationflags=getattr(_subprocess, "CREATE_NO_WINDOW", 0),
         )
         out = (r.stdout or "").strip()
@@ -339,9 +357,10 @@ def current_location(gps_required: bool = False) -> dict | None:
 def gps_error_message() -> str:
     """A user-facing message tailored to why the last Windows GPS lookup failed."""
     if _LAST_GPS_STATUS == "no_fix":
-        return ("Sir, Location Services is on, but Windows couldn't get a position "
-                "fix yet. Please wait a few seconds near a window or with Wi-Fi on, "
-                "then ask again.")
+        return ("Sir, Location Services is on, but the GPS couldn't lock a position "
+                "in time. A real GPS fix can take up to 30-40 seconds, especially "
+                "indoors or right after startup -- try moving near a window for a "
+                "clearer sky view, then ask again in a moment.")
     if _LAST_GPS_STATUS == "error":
         return ("Sir, I couldn't read your GPS location — the Windows location "
                 "lookup failed. Make sure Location Services is on and try again.")

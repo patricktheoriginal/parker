@@ -13,10 +13,10 @@ $script:asTask = [System.WindowsRuntimeSystemExtensions].GetMethods() |
     Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and
                    $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' } |
     Select-Object -First 1
-function Await($op, $resultType) {
+function Await($op, $resultType, $waitMs = 20000) {
     $m = $script:asTask.MakeGenericMethod($resultType)
     $t = $m.Invoke($null, @($op))
-    $t.Wait(20000) | Out-Null
+    $t.Wait($waitMs) | Out-Null
     return $t.Result
 }
 
@@ -31,9 +31,10 @@ try {
 
     if ($access -eq [Windows.Devices.Geolocation.GeolocationAccessStatus]::Allowed) {
         $geo = New-Object Windows.Devices.Geolocation.Geolocator
-        $geo.DesiredAccuracyInMeters = 100
+        $geo.DesiredAccuracy = [Windows.Devices.Geolocation.PositionAccuracy]::High
+        $geo.DesiredAccuracyInMeters = 10
         $posType = [Windows.Devices.Geolocation.Geoposition]
-        $pos = Await ($geo.GetGeopositionAsync()) $posType
+        $pos = Await ($geo.GetGeopositionAsync()) $posType 45000
         if ($pos -ne $null) {
             $p = $pos.Coordinate.Point.Position
             Write-Output ("    OK lat,lon = " + $p.Latitude + "," + $p.Longitude)
@@ -50,7 +51,7 @@ Write-Output "[B] Legacy GeoCoordinateWatcher (System.Device.Location)"
 try {
     Add-Type -AssemblyName System.Device
     $w = New-Object System.Device.Location.GeoCoordinateWatcher('High')
-    $null = $w.TryStart($true, [TimeSpan]::FromSeconds(15))
+    $null = $w.TryStart($true, [TimeSpan]::FromSeconds(45))
     Write-Output ("    Status: " + $w.Status + "  Permission: " + $w.Permission)
     $c = $w.Position.Location
     if ($c.IsUnknown) { Write-Output "    Location is UNKNOWN (no fix)" }
