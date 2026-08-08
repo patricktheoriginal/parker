@@ -3,7 +3,12 @@ route_engine.py — multi-route planning with per-route analysis.
 
 Produces several alternative driving routes between two Vietnam points, each
 with distance, duration, and a short analysis (fastest / shortest / fewest
-turns). Candidate routes come from BOTH (all free, open source, no API keys):
+turns). Candidate routes come from ALL of (all free, open source, no API keys):
+  - A* (self-hosted, actions/astar_route.py) — a driving graph built from
+                  OpenStreetMap data, entirely offline once built; no server
+                  or network dependency at all. Only used once its graph
+                  cache exists (see tools/build_osm_graph.py) -- building it
+                  from scratch takes minutes, too slow to do inline.
   - GraphHopper  (self-hosted open-source server at 'graphhopper_url', default
                   http://localhost:8989) — used if the local server is running
   - OSRM         (public server, no key) — always used
@@ -12,6 +17,7 @@ for a "different route" and cycle through the alternatives, and so the 3D map
 view can render the currently-selected one.
 
 To run a local GraphHopper for Vietnam: see tools/setup_graphhopper.sh.
+To build the self-hosted A* graph: see tools/build_osm_graph.py.
 
 Coordinates are returned as [lat, lon] point lists for the map layer.
 """
@@ -179,15 +185,54 @@ def _dedupe_routes(routes: list) -> list:
     return out
 
 
+def _astar_routes(o, d) -> list:
+    """Self-hosted A* over a locally cached OSM driving graph (see
+    actions/astar_route.py, actions/osm_graph.py) -- no external server or
+    API dependency at all, unlike GraphHopper (needs a local server running)
+    or OSRM (needs network access to a public server). Only attempted if the
+    graph cache already exists: building it from the ~300MB Vietnam OSM
+    extract takes minutes, far too slow to do inline on a route request --
+    see tools/build_osm_graph.py to build it ahead of time. Much slower per
+    query than GraphHopper/OSRM's contraction-hierarchy servers (seconds to
+    up to ~90s for a long route vs. sub-second), so it's tried first only
+    when ready, and route_engine still falls back to the HTTP engines below
+    if it's not available, times out, or finds no path."""
+    try:
+        from actions.astar_route import astar_available, find_route
+    except Exception as e:
+        print(f"[Route] A* engine unavailable: {e}")
+        return []
+    if not astar_available():
+        print("[Route] A* graph not built yet -- see tools/build_osm_graph.py. Using GraphHopper/OSRM.")
+        return []
+    try:
+        r = find_route(o, d)
+    except Exception as e:
+        print(f"[Route] A* failed: {e}")
+        return []
+    if not r:
+        print("[Route] A* found no path (falling back to GraphHopper/OSRM).")
+        return []
+    print(f"[Route] A*: 1 route ({r['distance_m']/1000:.1f} km, {r['duration_s']/60:.0f} min)")
+    return [r]
+
+
 def compute_routes(o: tuple, d: tuple, o_label: str, d_label: str,
                    depart_epoch: int | None = None) -> list:
-    """Compute alternative routes from a self-hosted GraphHopper (if its local
-    server is running) AND OSRM (always), merge + de-duplicate, and cache them.
+    """Compute alternative routes from a self-hosted A* graph (if built),
+    a self-hosted GraphHopper (if its local server is running), AND OSRM
+    (always), merge + de-duplicate, and cache them.
 
     `depart_epoch` is accepted for API compatibility but unused (no live traffic).
     """
     routes: list = []
-    # GraphHopper first (self-hosted, no key) if the local server is running.
+    # Self-hosted A* first (no external dependency at all) if the graph is
+    # already built.
+    try:
+        routes.extend(_astar_routes(o, d))
+    except Exception as e:
+        print(f"[Route] A* engine errored: {e}")
+    # GraphHopper next (self-hosted, no key) if the local server is running.
     try:
         gh = _graphhopper_routes(o, d)
         routes.extend(gh)
