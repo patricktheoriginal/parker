@@ -382,7 +382,19 @@ def route_directions(parameters: dict, player=None, session_memory=None) -> str:
         along.append(_weather_summary(lat, lon))
 
     # ── Alternative routes + 3D map ──────────────────────────────────────────
+    # compute_routes() tries the self-hosted A* engine first (if its graph is
+    # built), then GraphHopper, then OSRM -- A* in particular can take up to
+    # ~90s on a long cross-country route, so show a loading spinner in the UI
+    # for that whole window instead of leaving the content panel looking
+    # frozen. Always stopped before this block exits, on every path
+    # (success, no alternatives found, or an exception) -- render_map()
+    # itself also stops it on success, but the other paths need it here.
     routes_summary = ""
+    if player is not None:
+        try:
+            player.show_route_loading("Computing route (A* / GraphHopper / OSRM)...")
+        except Exception:
+            pass
     try:
         from actions.route_engine import compute_routes, render_map, describe
         depart_epoch = int(depart_dt.timestamp()) if depart_dt else None
@@ -393,6 +405,12 @@ def route_directions(parameters: dict, player=None, session_memory=None) -> str:
             routes_summary = describe(alts, 0)
     except Exception as e:
         print(f"[Route] alternatives/map failed: {e}")
+    finally:
+        if player is not None:
+            try:
+                player.hide_route_loading()
+            except Exception:
+                pass
 
     # Google Maps resolves place names/addresses better than raw coordinates, so
     # pass the exact text the user asked for (biased to Vietnam). This makes the

@@ -681,6 +681,79 @@ class MetricBar(QWidget):
         p.setPen(QPen(bar_col if self._text != "--" else qcol(C.TEXT_DIM), 1))
         p.drawText(QRectF(0, 4, W - 6, 16), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, self._text)
 
+class RouteSpinner(QWidget):
+    """Small animated loading indicator shown in the content panel while a
+    route is being computed -- a rotating arc (QConicalGradient, same visual
+    language as HudCanvas's rings) plus status text that names which engine
+    is currently being tried (A* / GraphHopper / OSRM), since the self-hosted
+    A* engine (actions/astar_route.py) can take up to ~90s on a long route --
+    without this, a route request just sat there with no feedback for that
+    whole window, which reads as Parker being frozen/unresponsive."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumHeight(120)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._angle = 0.0
+        self._status = "Computing route..."
+        self._tmr = QTimer(self)
+        self._tmr.timeout.connect(self._step)
+        self.hide()   # not spinning/painting while hidden — see start()/stop()
+
+    def set_status(self, text: str):
+        self._status = text
+        self.update()
+
+    def start(self, text: str = "Computing route..."):
+        self._status = text
+        self._angle = 0.0
+        self.show()
+        self._tmr.start(30)   # ~33fps — smooth without being a CPU hog
+
+    def stop(self):
+        self._tmr.stop()
+        self.hide()
+
+    def _step(self):
+        self._angle = (self._angle + 6.0) % 360.0
+        self.update()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        W, H = self.width(), self.height()
+
+        p.setBrush(QBrush(qcol(C.PANEL2)))
+        p.setPen(QPen(qcol(C.BORDER_A), 1))
+        p.drawRoundedRect(QRectF(1, 1, W - 2, H - 2), 4, 4)
+
+        cx, cy = W / 2, H / 2 - 8
+        r = min(W, H) * 0.16
+
+        # Rotating arc: a conical gradient fading to transparent so it reads
+        # as a "sweep" rather than a full static ring, then only the leading
+        # ~270 degrees are drawn — the gap is what makes it visibly rotate
+        # rather than looking like an unmoving circle even while animating.
+        grad = QConicalGradient(cx, cy, self._angle)
+        col = qcol(C.PRI)
+        grad.setColorAt(0.0, col)
+        transparent = QColor(col); transparent.setAlpha(0)
+        grad.setColorAt(0.75, transparent)
+        grad.setColorAt(1.0, transparent)
+
+        pen = QPen(QBrush(grad), 3.5)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawEllipse(QPointF(cx, cy), r, r)
+
+        p.setFont(QFont("Courier New", 8))
+        p.setPen(QPen(qcol(C.TEXT_DIM), 1))
+        p.drawText(QRectF(8, cy + r + 14, W - 16, 20),
+                  Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop,
+                  self._status)
+
+
 class LogWidget(QTextEdit):
     _sig = pyqtSignal(str)
 
@@ -1522,6 +1595,8 @@ class MainWindow(QMainWindow):
     _clipboard_sig  = pyqtSignal(str)        # clipboard text changed (thread-safe)
     _routemap_sig   = pyqtSignal(str)        # route map HTML string → show inline
     _mic_sig        = pyqtSignal(bool)        # set mic mute state (True=mute)
+    _route_loading_sig = pyqtSignal(str)     # route computation started → show spinner with this status text
+    _route_loaded_sig  = pyqtSignal()        # route computation finished (success or error) → hide spinner
 
     def __init__(self, face_path: str):
         super().__init__()
@@ -1664,6 +1739,8 @@ class MainWindow(QMainWindow):
         self._clipboard_sig.connect(self._show_clipboard_panel)
         self._routemap_sig.connect(self._show_route_map)
         self._mic_sig.connect(self._set_mic_muted)
+        self._route_loading_sig.connect(self._show_route_loading)
+        self._route_loaded_sig.connect(self._hide_route_loading)
         self._route_win = None            # embedded route-map window (if WebEngine)
         self._cam_stop = threading.Event()
 
@@ -2659,6 +2736,12 @@ class MainWindow(QMainWindow):
         """)
         lay.addWidget(self._content_display)
 
+        # ── route-loading spinner, shown while compute_routes() runs and hidden
+        # once the map arrives (or on error) — see show_route_loading()/
+        # hide_route_loading() below ──────────────────────────────────────────
+        self._route_spinner = RouteSpinner()
+        lay.addWidget(self._route_spinner)
+
         # ── embedded mini route map (WebEngine), hidden until a route shows ────
         self._route_view = None
         try:
@@ -2674,6 +2757,22 @@ class MainWindow(QMainWindow):
 
         return w
 
+    def _show_route_loading(self, status: str):
+        """Slot — a route computation started; show the spinner in place of
+        the (still-empty) map view so waiting on a slow engine (the
+        self-hosted A* can take up to ~90s) doesn't look like Parker froze."""
+        if hasattr(self, "_route_view") and self._route_view is not None:
+            self._route_view.hide()
+        self._route_spinner.start(status)
+        if hasattr(self, "_content_panel") and self._content_panel is not None:
+            self._content_panel.show()
+        self._content_title_lbl.setText("ROUTE")
+
+    def _hide_route_loading(self):
+        """Slot — route computation finished, one way or another (map shown,
+        or it errored/fell all the way through to the text-only reply)."""
+        self._route_spinner.stop()
+
     def _show_route_map(self, html: str):
         """Slot — show the 3D route map INLINE in the content panel.
 
@@ -2681,6 +2780,7 @@ class MainWindow(QMainWindow):
         important: QWebEngineView.setHtml() sandboxes the content and blocks the
         external MapLibre CDN and Esri satellite tiles, so the map came up blank.
         Loading from a real file:// URL lets those resources load."""
+        self._route_spinner.stop()
         from PyQt6.QtCore import QUrl as _QUrl
         import tempfile
         from pathlib import Path as _Path
@@ -3149,6 +3249,21 @@ class ParkerUI:
     def show_route_map(self, html: str):
         """Thread-safe: show a 3D route map from an HTML string (inline)."""
         self._win._routemap_sig.emit(html)
+
+    def show_route_loading(self, status: str = "Computing route..."):
+        """Thread-safe: show the route-loading spinner with a status message
+        (e.g. naming which engine is being tried). Call right before
+        compute_routes() -- the self-hosted A* engine in particular can take
+        up to ~90s on a long route, and without this the wait looked
+        identical to Parker being frozen."""
+        self._win._route_loading_sig.emit(status)
+
+    def hide_route_loading(self):
+        """Thread-safe: hide the route-loading spinner. Also called
+        automatically by show_route_map(), so this only needs to be called
+        explicitly on a path that DOESN'T end in a map (e.g. route
+        computation failed outright)."""
+        self._win._route_loaded_sig.emit()
 
     def prompt_reconfig(self):
         """Thread-safe: show the API key setup overlay (e.g. after an auth error)."""
